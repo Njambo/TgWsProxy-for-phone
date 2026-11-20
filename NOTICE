@@ -1,0 +1,15 @@
+TG WS Proxy Mobile
+
+This project reimplements, in Kotlin, the local MTProto-over-WebSocket proxy
+approach of:
+
+  Flowseal/tg-ws-proxy — https://github.com/Flowseal/tg-ws-proxy
+  Copyright (c) Flowseal and contributors
+  Licensed under the MIT License.
+
+No Python source code from that project is included here. The protocol
+constants and the re-encryption scheme follow the publicly documented
+MTProto obfuscated2 transport and the reference implementation above.
+
+"Telegram" is a trademark of Telegram Messenger Inc. This project is not
+affiliated with or endorsed by Telegram.
