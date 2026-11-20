@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,8 +30,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -44,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +65,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import org.tgwsproxy.mobile.core.RouteProbe
+import org.tgwsproxy.mobile.core.parseDomains
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,20 +85,28 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class AppScreen { Main, Log }
+
 @Composable
 private fun Screen() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("proxy", Context.MODE_PRIVATE) }
 
     val status by ProxyRuntime.status.collectAsState()
+    val route by ProxyRuntime.route.collectAsState()
     val logs by ProxyRuntime.logs.collectAsState()
     val running = status is ProxyStatus.Running
+
+    var screen by remember { mutableStateOf(AppScreen.Main) }
 
     var portText by remember {
         mutableStateOf(prefs.getInt("port", ProxyService.DEFAULT_PORT).toString())
     }
     var secretHex by remember {
         mutableStateOf(prefs.getString("secret", null) ?: randomSecretHex())
+    }
+    var workerDomain by remember {
+        mutableStateOf(prefs.getString("worker", null) ?: "")
     }
 
     val notificationPermission = rememberLauncherForActivityResult(
@@ -112,8 +128,12 @@ private fun Screen() {
             return
         }
         requestNotificationPermissionIfNeeded()
-        prefs.edit().putInt("port", port).putString("secret", secretHex).apply()
-        ProxyService.start(context, port, secretHex)
+        prefs.edit()
+            .putInt("port", port)
+            .putString("secret", secretHex)
+            .putString("worker", workerDomain)
+            .apply()
+        ProxyService.start(context, port, secretHex, workerDomain)
     }
 
     fun stopProxy() = ProxyService.stop(context)
@@ -129,6 +149,17 @@ private fun Screen() {
         Toast.makeText(context, "Ссылка скопирована", Toast.LENGTH_SHORT).show()
     }
 
+    fun copyLogs() {
+        val text = ProxyRuntime.snapshot()
+        if (text.isEmpty()) {
+            Toast.makeText(context, "Журнал пуст", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+        clipboard.setPrimaryClip(ClipData.newPlainText("Журнал", text))
+        Toast.makeText(context, "Журнал скопирован", Toast.LENGTH_SHORT).show()
+    }
+
     fun openTelegram() {
         try {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(proxyLink())))
@@ -137,9 +168,34 @@ private fun Screen() {
         }
     }
 
+    fun runProbe() {
+        ProxyRuntime.log("— проверка соединения —")
+        prefs.edit().putString("worker", workerDomain).apply()
+        RouteProbe.launch(
+            hexToBytes(secretHex),
+            parseDomains(workerDomain),
+            log = { line -> ProxyRuntime.log(line) },
+        )
+        screen = AppScreen.Log
+    }
+
+    BackHandler(enabled = screen == AppScreen.Log) { screen = AppScreen.Main }
+
+    if (screen == AppScreen.Log) {
+        LogScreen(
+            logCount = logs.size,
+            onBack = { screen = AppScreen.Main },
+            onProbe = { runProbe() },
+            onCopy = { copyLogs() },
+            onClear = { ProxyRuntime.clearLogs() },
+        )
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -155,7 +211,7 @@ private fun Screen() {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        StatusCard(status)
+        StatusCard(status, route)
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -183,6 +239,22 @@ private fun Screen() {
                 modifier = Modifier.weight(1f)
             )
         }
+
+        OutlinedTextField(
+            value = workerDomain,
+            onValueChange = { value ->
+                workerDomain = value.trim()
+                prefs.edit().putString("worker", workerDomain).apply()
+            },
+            label = { Text("Свой Cloudflare Worker") },
+            placeholder = { Text("myproxy.workers.dev") },
+            supportingText = {
+                Text("Необязательно. Свой адрес обходит блокировку общих доменов.")
+            },
+            singleLine = true,
+            enabled = !running,
+            modifier = Modifier.fillMaxWidth()
+        )
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (running) {
@@ -226,36 +298,118 @@ private fun Screen() {
             Text("Скопировать tg:// ссылку")
         }
 
-        Text(
-            "Журнал",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { screen = AppScreen.Log },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(if (logs.isEmpty()) "Журнал" else "Журнал · ${logs.size}")
+            }
+            OutlinedButton(
+                onClick = { runProbe() },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Проверить связь")
+            }
+        }
+
+        if (logs.isNotEmpty()) {
+            Text(
+                logs.last(),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 4,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    .padding(8.dp)
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun LogScreen(
+    logCount: Int,
+    onBack: () -> Unit,
+    onProbe: () -> Unit,
+    onCopy: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val logs by ProxyRuntime.logs.collectAsState()
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(logs.size) {
+        if (logs.isNotEmpty()) listState.scrollToItem(logs.lastIndex)
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) { Text("← Назад") }
+            Text(
+                "Журнал подключений",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                logCount.toString(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            TextButton(onClick = onProbe) { Text("Проверить связь") }
+            TextButton(onClick = onCopy) { Text("Копировать") }
+            TextButton(onClick = onClear) { Text("Очистить") }
+        }
 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
         ) {
             if (logs.isEmpty()) {
                 Text(
-                    "Пока пусто",
+                    "Пока пусто. Запустите прокси и откройте Telegram — " +
+                        "здесь появятся все шаги подключения.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(12.dp)
                 )
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize().padding(8.dp)) {
-                    items(logs) { line ->
-                        Text(
-                            line,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            lineHeight = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                SelectionContainer {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize().padding(8.dp)
+                    ) {
+                        items(logs) { line ->
+                            Text(
+                                line,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -264,7 +418,7 @@ private fun Screen() {
 }
 
 @Composable
-private fun StatusCard(status: ProxyStatus) {
+private fun StatusCard(status: ProxyStatus, route: String?) {
     val running = status is ProxyStatus.Running
     val dot = if (running) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline
 
@@ -301,6 +455,15 @@ private fun StatusCard(status: ProxyStatus) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (running) {
+                    Text(
+                        if (route == null) "канал: ещё не подключён"
+                        else "канал: $route",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
             }
         }
     }

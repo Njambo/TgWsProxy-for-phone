@@ -18,10 +18,19 @@ import java.util.concurrent.Executors
 internal class ProxyServer(
     private val port: Int,
     private val secret: ByteArray,
+    private val workerDomains: List<String> = emptyList(),
+    private val onRoute: (String?) -> Unit = {},
     private val logLine: (String) -> Unit,
 ) {
     private val pool = Executors.newCachedThreadPool()
+    private val router = TransportRouter(logLine, pool, workerDomains, onRoute)
     private var serverSocket: ServerSocket? = null
+
+    /** TCP fallback state: a blocked DC must not be retried on every client. */
+    @Volatile
+    private var tcpBlockedUntil = 0L
+    @Volatile
+    private var tcpFailures = 0
 
     @Volatile
     private var running = false
@@ -59,6 +68,9 @@ internal class ProxyServer(
     private fun handle(client: Socket) {
         val peer = client.inetAddress?.hostAddress ?: "?"
         try {
+            // Telegram asks for a media chunk and waits for the answer: a
+            // Nagle delay on the local hop adds latency to every request.
+            runCatching { client.tcpNoDelay = true }
             client.soTimeout = 15_000
             val input = BufferedInputStream(client.getInputStream())
             val output = BufferedOutputStream(client.getOutputStream())
@@ -91,7 +103,7 @@ internal class ProxyServer(
             val mediaLabel = if (handshake.isMedia) " media" else ""
             logLine("$peer → DC$dc$mediaLabel (${handshake.protoName})")
 
-            val webSocket = connectWebSocket(dc, handshake.isMedia)
+            val webSocket = router.open(dc, handshake.isMedia)
             if (webSocket != null) {
                 bridgeWebSocket(
                     client, input, output, webSocket, relayInit, crypto,
@@ -126,11 +138,24 @@ internal class ProxyServer(
             return
         }
 
+        val startedAt = System.currentTimeMillis()
+        var upBytes = 0L
+        var downBytes = 0L
+        // A Worker pipes raw bytes, so packet boundaries mean nothing there:
+        // sending the stream as it arrives saves a frame and a copy per packet.
+        val rawStream = webSocket.byteStream
+
         val downstream = Thread({
             try {
                 while (true) {
-                    val frame = webSocket.receive() ?: break
+                    val frame = webSocket.receive()
+                    if (frame == null) {
+                        val info = webSocket.closeInfo
+                        logLine(if (info != null) "WS закрыт Telegram: $info" else "WS: канал закрыт без кадра")
+                        break
+                    }
                     if (frame.isEmpty()) continue
+                    downBytes += frame.size
                     val plain = crypto.telegramToClient(frame)
                     synchronized(output) {
                         output.write(plain)
@@ -152,36 +177,32 @@ internal class ProxyServer(
                 val count = input.read(buffer)
                 if (count < 0) break
                 val (plain, encrypted) = crypto.clientToTelegram(buffer.copyOf(count))
-                for (part in splitter.split(encrypted, plain)) webSocket.send(part)
+                upBytes += encrypted.size
+                if (rawStream) {
+                    webSocket.send(encrypted)
+                } else {
+                    for (part in splitter.split(encrypted, plain)) webSocket.send(part)
+                }
             }
-            for (part in splitter.flush()) webSocket.send(part)
+            if (!rawStream) {
+                for (part in splitter.flush()) webSocket.send(part)
+            }
         } catch (_: Exception) {
         } finally {
             webSocket.close()
             runCatching { client.close() }
+            val seconds = (System.currentTimeMillis() - startedAt) / 1000.0
+            logLine(
+                "WS сессия: ↑${formatBytes(upBytes)} ↓${formatBytes(downBytes)}" +
+                    " за ${"%.0f".format(seconds)} с"
+            )
         }
     }
 
-    private fun connectWebSocket(dc: Int, media: Boolean): RawWebSocket? {
-        for (host in webSocketHosts(dc, media)) {
-            try {
-                val socket = RawWebSocket.connect(host)
-                logLine("WebSocket $host")
-                return socket
-            } catch (exception: Exception) {
-                logLine("WS $host: ${exception.message}")
-            }
-        }
-        return null
-    }
-
-    private fun webSocketHosts(dc: Int, media: Boolean): List<String> {
-        val index = if (dc == 203) 2 else dc
-        return if (media) {
-            listOf("kws$index-1.web.telegram.org", "kws$index.web.telegram.org")
-        } else {
-            listOf("kws$index.web.telegram.org")
-        }
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024L -> "%.1f МБ".format(bytes / (1024.0 * 1024.0))
+        bytes >= 1024L -> "%.0f КБ".format(bytes / 1024.0)
+        else -> "$bytes Б"
     }
 
     // ---- raw TCP fallback ---------------------------------------------------
@@ -194,15 +215,21 @@ internal class ProxyServer(
         relayInit: ByteArray,
         crypto: CryptoContext,
     ) {
-        val address = DC_IPS[dc]
+        val address = TelegramDc.tcp[dc]
         if (address == null) {
             logLine("DC$dc: нет адреса для TCP-фолбэка")
             return
         }
 
+        val now = System.currentTimeMillis()
+        if (now < tcpBlockedUntil) {
+            logLine("TCP-фолбэк на паузе ещё ${(tcpBlockedUntil - now) / 1000 + 1} с")
+            return
+        }
+
         val remote = Socket()
         try {
-            remote.connect(InetSocketAddress(address, 443), 10_000)
+            remote.connect(InetSocketAddress(address, 443), 6_000)
             remote.tcpNoDelay = true
             remote.soTimeout = 0
             remote.getOutputStream().apply {
@@ -210,8 +237,12 @@ internal class ProxyServer(
                 flush()
             }
             logLine("TCP fallback → $address:443")
+            tcpFailures = 0
         } catch (exception: Exception) {
-            logLine("TCP fallback: ${exception.message}")
+            tcpFailures += 1
+            val delay = minOf(5_000L shl minOf(tcpFailures - 1, 4), 60_000L)
+            tcpBlockedUntil = System.currentTimeMillis() + delay
+            logLine("TCP fallback: ${shortError(exception)} · пауза ${delay / 1000} с")
             runCatching { remote.close() }
             return
         }
@@ -272,14 +303,4 @@ internal class ProxyServer(
         return data
     }
 
-    private companion object {
-        val DC_IPS: Map<Int, String> = mapOf(
-            1 to "149.154.175.50",
-            2 to "149.154.167.51",
-            3 to "149.154.175.100",
-            4 to "149.154.167.91",
-            5 to "149.154.171.5",
-            203 to "91.105.192.100",
-        )
-    }
 }

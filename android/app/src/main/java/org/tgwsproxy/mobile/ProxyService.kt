@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import org.tgwsproxy.mobile.core.ProxyServer
+import org.tgwsproxy.mobile.core.parseDomains
 
 class ProxyService : Service() {
 
@@ -27,6 +28,7 @@ class ProxyService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
         val secretHex = intent?.getStringExtra(EXTRA_SECRET)
+        val workerDomains = parseDomains(intent?.getStringExtra(EXTRA_WORKER))
         if (secretHex == null) {
             stopSelf()
             return START_NOT_STICKY
@@ -39,9 +41,15 @@ class ProxyService : Service() {
 
         ProxyRuntime.port.value = port
         ProxyRuntime.secretHex.value = secretHex
+        ProxyRuntime.setRoute(null)
         ProxyRuntime.setStatus(ProxyStatus.Running(port))
 
-        val instance = ProxyServer(port, hexToBytes(secretHex)) { line -> ProxyRuntime.log(line) }
+        val instance = ProxyServer(
+            port = port,
+            secret = hexToBytes(secretHex),
+            workerDomains = workerDomains,
+            onRoute = { route -> ProxyRuntime.setRoute(route) },
+        ) { line -> ProxyRuntime.log(line) }
         server = instance
         try {
             instance.start()
@@ -58,6 +66,7 @@ class ProxyService : Service() {
         server?.stop()
         server = null
         ProxyRuntime.setStatus(ProxyStatus.Stopped)
+        ProxyRuntime.setRoute(null)
         ProxyRuntime.log("Сервис остановлен")
         super.onDestroy()
     }
@@ -114,12 +123,14 @@ class ProxyService : Service() {
         private const val NOTIFICATION_ID = 1443
         const val EXTRA_PORT = "port"
         const val EXTRA_SECRET = "secret"
+        const val EXTRA_WORKER = "worker"
         const val DEFAULT_PORT = 1443
 
-        fun start(context: Context, port: Int, secretHex: String) {
+        fun start(context: Context, port: Int, secretHex: String, workerDomain: String) {
             val intent = Intent(context, ProxyService::class.java)
                 .putExtra(EXTRA_PORT, port)
                 .putExtra(EXTRA_SECRET, secretHex)
+                .putExtra(EXTRA_WORKER, workerDomain)
             ContextCompat.startForegroundService(context, intent)
         }
 
