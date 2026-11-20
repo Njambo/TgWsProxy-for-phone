@@ -45,6 +45,26 @@ python3 tools/verify_crypto.py
 relay-init и перешифровку в обе стороны для всех трёх тегов транспорта.
 Этот же шаг выполняется в CI перед сборкой.
 
+## Готовая сборка
+
+Debug-APK из этого дерева: `dist/tgws-mobile-0.1.0-debug.apk`
+(`org.tgwsproxy.mobile`, minSdk 26, targetSdk 35, подпись — стандартный
+Android debug-ключ). При установке Android попросит разрешить установку из
+неизвестного источника — для debug-сборки это ожидаемо.
+
+Собрано на arm64-хосте без Android Studio: JDK 17 Temurin, Android SDK 35,
+Gradle 8.9 в `~/.local/android-build`, а x86-64 `aapt2` из build-tools
+запускается через `qemu-user` (обёртка `~/.local/android-build/aapt2-bin/aapt2`).
+Контейнеру выделено 2 ГБ, поэтому heap Gradle урезан:
+
+```bash
+export ANDROID_HOME=~/.local/android-build/sdk
+gradle assembleDebug --no-daemon --max-workers=1 \
+  -Dorg.gradle.jvmargs="-Xmx900m -XX:MaxMetaspaceSize=512m" \
+  -Pkotlin.compiler.execution.strategy=in-process \
+  -Pandroid.aapt2FromMavenOverride=~/.local/android-build/aapt2-bin/aapt2
+```
+
 ## Установка и использование
 
 1. Установить APK на телефон.
