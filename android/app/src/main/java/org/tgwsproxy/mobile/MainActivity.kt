@@ -41,6 +41,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -113,7 +114,7 @@ private enum class ThemeMode {
     }
 }
 
-private enum class AppScreen { Main, Log }
+private enum class AppScreen { Main, Log, Settings }
 
 @Composable
 private fun Screen(
@@ -313,7 +314,19 @@ private fun Screen(
         )
     }
 
-    BackHandler(enabled = screen == AppScreen.Log) { screen = AppScreen.Main }
+    BackHandler(enabled = screen != AppScreen.Main) { screen = AppScreen.Main }
+
+    if (screen == AppScreen.Settings) {
+        SettingsScreen(
+            themeMode = themeMode,
+            onThemeChange = onThemeChange,
+            versionName = versionName,
+            checkingUpdates = checkingUpdates,
+            onCheckUpdates = { checkUpdates(manual = true) },
+            onBack = { screen = AppScreen.Main },
+        )
+        return
+    }
 
     if (screen == AppScreen.Log) {
         LogScreen(
@@ -333,11 +346,20 @@ private fun Screen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            "TG WS Proxy Mobile",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "TG WS Proxy Mobile",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { screen = AppScreen.Settings }) {
+                Text("⚙", fontSize = 24.sp)
+            }
+        }
         Text(
             "Локальный MTProto-прокси: трафик Telegram идёт через WebSocket " +
                 "на серверы web.telegram.org, а не напрямую на DC.",
@@ -447,16 +469,6 @@ private fun Screen(
             }
         }
 
-        ThemeSelector(themeMode, onThemeChange)
-
-        TextButton(
-            onClick = { checkUpdates(manual = true) },
-            enabled = !checkingUpdates,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (checkingUpdates) "Проверка…" else "Проверить обновления · v$versionName")
-        }
-
         if (logs.isNotEmpty()) {
             Text(
                 logs.last(),
@@ -473,6 +485,57 @@ private fun Screen(
             )
         }
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    themeMode: ThemeMode,
+    onThemeChange: (ThemeMode) -> Unit,
+    versionName: String,
+    checkingUpdates: Boolean,
+    onCheckUpdates: () -> Unit,
+    onBack: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) { Text("← Назад") }
+            Text(
+                "Настройки",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            ThemeSelector(themeMode, onThemeChange)
+
+            OutlinedButton(
+                onClick = onCheckUpdates,
+                enabled = !checkingUpdates,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (checkingUpdates) "Проверка…" else "Проверить обновления")
+            }
+
+            Text(
+                "Версия $versionName",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
