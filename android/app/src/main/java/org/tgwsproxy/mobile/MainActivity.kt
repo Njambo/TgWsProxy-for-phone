@@ -9,6 +9,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -54,6 +56,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -62,12 +66,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -85,6 +95,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             var themeMode by remember {
                 mutableStateOf(ThemeMode.fromName(prefs.getString("theme", null)))
+            }
+            var readerMode by remember {
+                mutableStateOf(ReaderMode.fromName(prefs.getString("screen_reader", null)))
+            }
+            val systemReader = rememberSystemScreenReader()
+            val readerActive = when (readerMode) {
+                ReaderMode.Auto -> systemReader
+                ReaderMode.On -> true
+                ReaderMode.Off -> false
             }
             val dark = when (themeMode) {
                 ThemeMode.System -> isSystemInDarkTheme()
@@ -112,13 +131,21 @@ class MainActivity : ComponentActivity() {
                             .safeDrawingPadding()
                             .padding(top = 8.dp)
                     ) {
-                        Screen(
-                            themeMode = themeMode,
-                            onThemeChange = { mode ->
-                                themeMode = mode
-                                prefs.edit().putString("theme", mode.name).apply()
-                            }
-                        )
+                        CompositionLocalProvider(LocalScreenReaderMode provides readerActive) {
+                            Screen(
+                                themeMode = themeMode,
+                                onThemeChange = { mode ->
+                                    themeMode = mode
+                                    prefs.edit().putString("theme", mode.name).apply()
+                                },
+                                readerMode = readerMode,
+                                onReaderModeChange = { mode ->
+                                    readerMode = mode
+                                    prefs.edit().putString("screen_reader", mode.name).apply()
+                                },
+                                systemReader = systemReader,
+                            )
+                        }
                     }
                 }
             }
@@ -135,12 +162,42 @@ private enum class ThemeMode {
     }
 }
 
+/** Режим для экранного диктора: Авто включается, когда в системе включён TalkBack. */
+private enum class ReaderMode {
+    Auto, On, Off;
+
+    companion object {
+        fun fromName(name: String?): ReaderMode =
+            entries.firstOrNull { it.name == name } ?: Auto
+    }
+}
+
+/** true, если режим для экранного диктора действует прямо сейчас. */
+private val LocalScreenReaderMode = staticCompositionLocalOf { false }
+
+/** Включён ли в системе экранный диктор (TalkBack и аналоги): следим за изменением на лету. */
+@Composable
+private fun rememberSystemScreenReader(): Boolean {
+    val context = LocalContext.current
+    val manager = remember { context.getSystemService(AccessibilityManager::class.java) }
+    var enabled by remember { mutableStateOf(manager?.isTouchExplorationEnabled == true) }
+    DisposableEffect(manager) {
+        val listener = AccessibilityManager.TouchExplorationStateChangeListener { enabled = it }
+        manager?.addTouchExplorationStateChangeListener(listener)
+        onDispose { manager?.removeTouchExplorationStateChangeListener(listener) }
+    }
+    return enabled
+}
+
 private enum class AppScreen { Main, Log, Settings }
 
 @Composable
 private fun Screen(
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
+    readerMode: ReaderMode,
+    onReaderModeChange: (ReaderMode) -> Unit,
+    systemReader: Boolean,
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("proxy", Context.MODE_PRIVATE) }
@@ -232,6 +289,21 @@ private fun Screen(
         screen = AppScreen.Log
     }
 
+    val view = LocalView.current
+    val readerActive = LocalScreenReaderMode.current
+    var lastRunning by remember { mutableStateOf(running) }
+    LaunchedEffect(running) {
+        if (running != lastRunning) {
+            lastRunning = running
+            if (readerActive) {
+                view.announceForAccessibility(if (running) "Прокси запущен" else "Прокси остановлен")
+            }
+        }
+    }
+    LaunchedEffect(route) {
+        if (readerActive && route != null) view.announceForAccessibility("Канал: $route")
+    }
+
     val scope = rememberCoroutineScope()
     val versionName = remember { Updater.currentVersionName(context) }
     var updateInfo by remember { mutableStateOf<UpdateCheck.Available?>(null) }
@@ -243,6 +315,14 @@ private fun Screen(
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (_: Exception) {
             Toast.makeText(context, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openAccessibilitySettings() {
+        try {
+            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (_: Exception) {
+            Toast.makeText(context, "Не удалось открыть настройки", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -348,6 +428,10 @@ private fun Screen(
             versionName = versionName,
             checkingUpdates = checkingUpdates,
             onCheckUpdates = { checkUpdates(manual = true) },
+            readerMode = readerMode,
+            onReaderModeChange = onReaderModeChange,
+            systemReader = systemReader,
+            onOpenAccessibility = { openAccessibilitySettings() },
             onBack = { screen = AppScreen.Main },
         )
         return
@@ -379,10 +463,15 @@ private fun Screen(
                 "TG WS Proxy Mobile",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
             )
-            IconButton(onClick = { screen = AppScreen.Settings }) {
-                Text("⚙", fontSize = 24.sp)
+            IconButton(
+                onClick = { screen = AppScreen.Settings },
+                modifier = Modifier.semantics { contentDescription = "Настройки" }
+            ) {
+                Text("⚙", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
             }
         }
         Text(
@@ -529,6 +618,10 @@ private fun SettingsScreen(
     versionName: String,
     checkingUpdates: Boolean,
     onCheckUpdates: () -> Unit,
+    readerMode: ReaderMode,
+    onReaderModeChange: (ReaderMode) -> Unit,
+    systemReader: Boolean,
+    onOpenAccessibility: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -538,12 +631,17 @@ private fun SettingsScreen(
                 .padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = onBack) { Text("← Назад") }
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
             Text(
                 "Настройки",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
             )
         }
 
@@ -554,7 +652,44 @@ private fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            ThemeSelector(themeMode, onThemeChange)
+            OptionSelector(
+                title = "Тема оформления",
+                options = listOf(
+                    ThemeMode.System to "Авто",
+                    ThemeMode.Light to "Светлая",
+                    ThemeMode.Dark to "Тёмная",
+                ),
+                current = themeMode,
+                onChange = onThemeChange,
+            )
+
+            OptionSelector(
+                title = "Режим для экранного диктора (TalkBack)",
+                options = listOf(
+                    ReaderMode.Auto to "Авто",
+                    ReaderMode.On to "Вкл",
+                    ReaderMode.Off to "Выкл",
+                ),
+                current = readerMode,
+                onChange = onReaderModeChange,
+            )
+            Text(
+                if (systemReader) {
+                    "TalkBack в системе включён: в режиме «Авто» приложение голосом сообщает " +
+                        "о запуске и остановке прокси и о смене канала."
+                } else {
+                    "TalkBack в системе выключен. В режиме «Авто» дополнительные озвучки " +
+                        "включатся сами, когда вы включите его в настройках телефона."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedButton(
+                onClick = onOpenAccessibility,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Открыть настройки TalkBack")
+            }
 
             OutlinedButton(
                 onClick = onCheckUpdates,
@@ -574,18 +709,15 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun ThemeSelector(
-    current: ThemeMode,
-    onChange: (ThemeMode) -> Unit,
+private fun <T> OptionSelector(
+    title: String,
+    options: List<Pair<T, String>>,
+    current: T,
+    onChange: (T) -> Unit,
 ) {
-    val options = listOf(
-        ThemeMode.System to "Авто",
-        ThemeMode.Light to "Светлая",
-        ThemeMode.Dark to "Тёмная",
-    )
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "Тема оформления",
+            title,
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -593,19 +725,23 @@ private fun ThemeSelector(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            options.forEach { (mode, label) ->
+            options.forEach { (value, label) ->
                 val padding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                if (mode == current) {
+                val selected = value == current
+                val buttonModifier = Modifier
+                    .weight(1f)
+                    .semantics { stateDescription = if (selected) "Выбрано" else "Не выбрано" }
+                if (selected) {
                     Button(
-                        onClick = { onChange(mode) },
+                        onClick = { onChange(value) },
                         contentPadding = padding,
-                        modifier = Modifier.weight(1f)
+                        modifier = buttonModifier
                     ) { Text(label, maxLines = 1) }
                 } else {
                     OutlinedButton(
-                        onClick = { onChange(mode) },
+                        onClick = { onChange(value) },
                         contentPadding = padding,
-                        modifier = Modifier.weight(1f)
+                        modifier = buttonModifier
                     ) { Text(label, maxLines = 1) }
                 }
             }
@@ -635,12 +771,17 @@ private fun LogScreen(
                 .padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = onBack) { Text("← Назад") }
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
             Text(
                 "Журнал подключений",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
             )
             Text(
                 logCount.toString(),
@@ -704,7 +845,9 @@ private fun StatusCard(status: ProxyStatus, route: String?) {
     val dot = if (running) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { },
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         )
