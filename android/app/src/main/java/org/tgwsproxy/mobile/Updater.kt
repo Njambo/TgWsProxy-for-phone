@@ -8,7 +8,6 @@ import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -16,7 +15,7 @@ import java.net.URL
 
 sealed interface UpdateCheck {
     data object UpToDate : UpdateCheck
-    data object Failed : UpdateCheck
+    data class Failed(val reason: String) : UpdateCheck
     data class Available(
         val versionCode: Long,
         val title: String,
@@ -30,13 +29,15 @@ sealed interface UpdateCheck {
  * Проверка обновлений через GitHub Releases.
  *
  * CI публикует каждую сборку из main как релиз с тегом `build-<versionCode>`
- * и приложенным APK. Приложение сравнивает свой versionCode с номером в теге
- * последнего релиза.
+ * и APK `tgws-mobile-<versionCode>.apk`. Приложение открывает страницу
+ * `/releases/latest`, не следует за перенаправлением и берёт номер сборки из
+ * адреса, на который она ведёт. API GitHub не используется: у него жёсткий
+ * лимит 60 запросов в час на IP, а за одним IP часто сидят тысячи абонентов.
  */
 object Updater {
     const val REPO = "Njambo/TgWsProxy-for-phone"
 
-    private val TAG_RE = Regex("""build-(\d+)""")
+    private val TAG_RE = Regex("""/releases/tag/build-(\d+)""")
 
     fun currentVersionCode(context: Context): Long {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
@@ -47,41 +48,36 @@ object Updater {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
 
     suspend fun check(context: Context): UpdateCheck = withContext(Dispatchers.IO) {
-        val conn = URL("https://api.github.com/repos/$REPO/releases/latest")
+        val conn = URL("https://github.com/$REPO/releases/latest")
             .openConnection() as HttpURLConnection
         try {
+            conn.instanceFollowRedirects = false
             conn.connectTimeout = 10_000
             conn.readTimeout = 10_000
-            conn.setRequestProperty("Accept", "application/vnd.github+json")
-            if (conn.responseCode != 200) return@withContext UpdateCheck.Failed
+            conn.setRequestProperty("User-Agent", "TgWsProxyMobile")
 
-            val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-            val tag = json.optString("tag_name")
-            val remote = TAG_RE.matchEntire(tag)?.groupValues?.get(1)?.toLongOrNull()
-                ?: return@withContext UpdateCheck.Failed
+            val code = conn.responseCode
+            if (code !in 300..399) {
+                return@withContext UpdateCheck.Failed("ответ сервера $code")
+            }
+            val location = conn.getHeaderField("Location")
+                ?: return@withContext UpdateCheck.Failed("нет адреса релиза")
+            val remote = TAG_RE.find(location)?.groupValues?.get(1)?.toLongOrNull()
+                ?: return@withContext UpdateCheck.Failed("релизов пока нет")
+
             if (remote <= currentVersionCode(context)) return@withContext UpdateCheck.UpToDate
 
-            var apkUrl: String? = null
-            val assets = json.optJSONArray("assets")
-            if (assets != null) {
-                for (i in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(i)
-                    if (asset.optString("name").endsWith(".apk")) {
-                        apkUrl = asset.optString("browser_download_url").ifBlank { null }
-                        break
-                    }
-                }
-            }
+            val base = "https://github.com/$REPO/releases"
             UpdateCheck.Available(
                 versionCode = remote,
-                title = json.optString("name").ifBlank { tag },
-                notes = json.optString("body"),
-                apkUrl = apkUrl,
-                pageUrl = json.optString("html_url")
-                    .ifBlank { "https://github.com/$REPO/releases/latest" },
+                title = "Сборка $remote",
+                notes = "",
+                apkUrl = "$base/download/build-$remote/tgws-mobile-$remote.apk",
+                pageUrl = "$base/tag/build-$remote",
             )
-        } catch (_: Exception) {
-            UpdateCheck.Failed
+        } catch (e: Exception) {
+            val detail = e.message?.take(80) ?: ""
+            UpdateCheck.Failed("${e.javaClass.simpleName} $detail".trim())
         } finally {
             conn.disconnect()
         }

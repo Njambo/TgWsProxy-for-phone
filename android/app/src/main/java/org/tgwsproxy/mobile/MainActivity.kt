@@ -234,8 +234,12 @@ private fun Screen(
                 UpdateCheck.UpToDate -> if (manual) {
                     Toast.makeText(context, "У вас последняя версия", Toast.LENGTH_SHORT).show()
                 }
-                UpdateCheck.Failed -> if (manual) {
-                    Toast.makeText(context, "Не удалось проверить обновления", Toast.LENGTH_SHORT).show()
+                is UpdateCheck.Failed -> if (manual) {
+                    Toast.makeText(
+                        context,
+                        "Не удалось проверить обновления: ${result.reason}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
             checkingUpdates = false
