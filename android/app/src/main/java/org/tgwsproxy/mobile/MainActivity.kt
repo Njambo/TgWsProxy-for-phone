@@ -18,12 +18,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -44,6 +46,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
@@ -105,6 +108,9 @@ class MainActivity : ComponentActivity() {
                 ReaderMode.On -> true
                 ReaderMode.Off -> false
             }
+            var palette by remember {
+                mutableStateOf(Palette.fromName(prefs.getString("palette", null)))
+            }
             val dark = when (themeMode) {
                 ThemeMode.System -> isSystemInDarkTheme()
                 ThemeMode.Light -> false
@@ -120,7 +126,7 @@ class MainActivity : ComponentActivity() {
                     controller.isAppearanceLightNavigationBars = !dark
                 }
             }
-            MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+            MaterialTheme(colorScheme = palette.colors(dark)) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -137,6 +143,11 @@ class MainActivity : ComponentActivity() {
                                 onThemeChange = { mode ->
                                     themeMode = mode
                                     prefs.edit().putString("theme", mode.name).apply()
+                                },
+                                palette = palette,
+                                onPaletteChange = { item ->
+                                    palette = item
+                                    prefs.edit().putString("palette", item.name).apply()
                                 },
                                 readerMode = readerMode,
                                 onReaderModeChange = { mode ->
@@ -159,6 +170,88 @@ private enum class ThemeMode {
     companion object {
         fun fromName(name: String?): ThemeMode =
             entries.firstOrNull { it.name == name } ?: ThemeMode.System
+    }
+}
+
+private fun ThemeMode.label(): String = when (this) {
+    ThemeMode.System -> "Авто"
+    ThemeMode.Light -> "Светлая"
+    ThemeMode.Dark -> "Тёмная"
+}
+
+/**
+ * Цветовые схемы. Чтобы добавить новую тему, достаточно добавить сюда ещё один
+ * пункт и описать его цвета в colors(): экран «Темы» подхватит его сам.
+ */
+private enum class Palette(val label: String, val swatch: Color) {
+    Standard("Стандартная", Color(0xFF6650A4)),
+    Blue("Синяя", Color(0xFF1565C0)),
+    Green("Зелёная", Color(0xFF2E7D32)),
+    Orange("Оранжевая", Color(0xFFE65100)),
+    Pink("Розовая", Color(0xFFC2185B)),
+    Amoled("AMOLED (чёрная)", Color(0xFF000000));
+
+    fun colors(dark: Boolean): ColorScheme = when (this) {
+        Standard -> if (dark) darkColorScheme() else lightColorScheme()
+        Blue -> if (dark) {
+            darkColorScheme(
+                primary = Color(0xFF9ECAFF), onPrimary = Color(0xFF003258),
+                primaryContainer = Color(0xFF00497D), onPrimaryContainer = Color(0xFFD1E4FF)
+            )
+        } else {
+            lightColorScheme(
+                primary = Color(0xFF1565C0), onPrimary = Color.White,
+                primaryContainer = Color(0xFFD3E3FD), onPrimaryContainer = Color(0xFF001B3E)
+            )
+        }
+        Green -> if (dark) {
+            darkColorScheme(
+                primary = Color(0xFF8BD88F), onPrimary = Color(0xFF003915),
+                primaryContainer = Color(0xFF1B5E20), onPrimaryContainer = Color(0xFFC8E6C9)
+            )
+        } else {
+            lightColorScheme(
+                primary = Color(0xFF2E7D32), onPrimary = Color.White,
+                primaryContainer = Color(0xFFC8E6C9), onPrimaryContainer = Color(0xFF00210B)
+            )
+        }
+        Orange -> if (dark) {
+            darkColorScheme(
+                primary = Color(0xFFFFB68F), onPrimary = Color(0xFF5B1A00),
+                primaryContainer = Color(0xFF813000), onPrimaryContainer = Color(0xFFFFDBC8)
+            )
+        } else {
+            lightColorScheme(
+                primary = Color(0xFFE65100), onPrimary = Color.White,
+                primaryContainer = Color(0xFFFFDBC8), onPrimaryContainer = Color(0xFF380D00)
+            )
+        }
+        Pink -> if (dark) {
+            darkColorScheme(
+                primary = Color(0xFFFFB1C8), onPrimary = Color(0xFF650033),
+                primaryContainer = Color(0xFF8E0E4B), onPrimaryContainer = Color(0xFFFFD9E2)
+            )
+        } else {
+            lightColorScheme(
+                primary = Color(0xFFC2185B), onPrimary = Color.White,
+                primaryContainer = Color(0xFFFFD9E2), onPrimaryContainer = Color(0xFF3E001D)
+            )
+        }
+        // Чёрный фон для OLED-экранов; в светлом режиме остаётся стандартная схема.
+        Amoled -> if (dark) {
+            darkColorScheme(
+                background = Color.Black,
+                surface = Color.Black,
+                surfaceVariant = Color(0xFF1C1C1E)
+            )
+        } else {
+            lightColorScheme()
+        }
+    }
+
+    companion object {
+        fun fromName(name: String?): Palette =
+            entries.firstOrNull { it.name == name } ?: Standard
     }
 }
 
@@ -189,12 +282,14 @@ private fun rememberSystemScreenReader(): Boolean {
     return enabled
 }
 
-private enum class AppScreen { Main, Log, Settings }
+private enum class AppScreen { Main, Log, Settings, Themes }
 
 @Composable
 private fun Screen(
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
+    palette: Palette,
+    onPaletteChange: (Palette) -> Unit,
     readerMode: ReaderMode,
     onReaderModeChange: (ReaderMode) -> Unit,
     systemReader: Boolean,
@@ -419,12 +514,15 @@ private fun Screen(
         )
     }
 
-    BackHandler(enabled = screen != AppScreen.Main) { screen = AppScreen.Main }
+    BackHandler(enabled = screen != AppScreen.Main) {
+        screen = if (screen == AppScreen.Themes) AppScreen.Settings else AppScreen.Main
+    }
 
     if (screen == AppScreen.Settings) {
         SettingsScreen(
             themeMode = themeMode,
-            onThemeChange = onThemeChange,
+            palette = palette,
+            onOpenThemes = { screen = AppScreen.Themes },
             versionName = versionName,
             checkingUpdates = checkingUpdates,
             onCheckUpdates = { checkUpdates(manual = true) },
@@ -433,6 +531,17 @@ private fun Screen(
             systemReader = systemReader,
             onOpenAccessibility = { openAccessibilitySettings() },
             onBack = { screen = AppScreen.Main },
+        )
+        return
+    }
+
+    if (screen == AppScreen.Themes) {
+        ThemesScreen(
+            themeMode = themeMode,
+            onThemeChange = onThemeChange,
+            palette = palette,
+            onPaletteChange = onPaletteChange,
+            onBack = { screen = AppScreen.Settings },
         )
         return
     }
@@ -614,7 +723,8 @@ private fun Screen(
 @Composable
 private fun SettingsScreen(
     themeMode: ThemeMode,
-    onThemeChange: (ThemeMode) -> Unit,
+    palette: Palette,
+    onOpenThemes: () -> Unit,
     versionName: String,
     checkingUpdates: Boolean,
     onCheckUpdates: () -> Unit,
@@ -652,16 +762,20 @@ private fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            OptionSelector(
-                title = "Тема оформления",
-                options = listOf(
-                    ThemeMode.System to "Авто",
-                    ThemeMode.Light to "Светлая",
-                    ThemeMode.Dark to "Тёмная",
-                ),
-                current = themeMode,
-                onChange = onThemeChange,
-            )
+            OutlinedButton(
+                onClick = onOpenThemes,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Темы")
+                    Text(
+                        "${palette.label} · ${themeMode.label()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            }
 
             OptionSelector(
                 title = "Режим для экранного диктора (TalkBack)",
@@ -701,6 +815,99 @@ private fun SettingsScreen(
 
             Text(
                 "Версия $versionName",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun ThemesScreen(
+    themeMode: ThemeMode,
+    onThemeChange: (ThemeMode) -> Unit,
+    palette: Palette,
+    onPaletteChange: (Palette) -> Unit,
+    onBack: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Темы",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            OptionSelector(
+                title = "Режим",
+                options = ThemeMode.entries.map { it to it.label() },
+                current = themeMode,
+                onChange = onThemeChange,
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Цветовая схема",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Palette.entries.forEach { item ->
+                    val selected = item == palette
+                    val rowModifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { stateDescription = if (selected) "Выбрано" else "Не выбрано" }
+                    val rowContent: @Composable RowScope.() -> Unit = {
+                        Box(
+                            Modifier
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .background(item.swatch)
+                                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(item.label, modifier = Modifier.weight(1f))
+                        if (selected) {
+                            Text("✓", modifier = Modifier.clearAndSetSemantics { })
+                        }
+                    }
+                    if (selected) {
+                        Button(
+                            onClick = { onPaletteChange(item) },
+                            modifier = rowModifier,
+                            content = rowContent
+                        )
+                    } else {
+                        OutlinedButton(
+                            onClick = { onPaletteChange(item) },
+                            modifier = rowModifier,
+                            content = rowContent
+                        )
+                    }
+                }
+            }
+
+            Text(
+                "Схема «AMOLED» меняет только тёмный режим: в светлом используется стандартная.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
