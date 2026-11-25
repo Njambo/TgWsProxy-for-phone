@@ -20,6 +20,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,9 +37,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -53,6 +56,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,30 +69,57 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prefs = getSharedPreferences("proxy", Context.MODE_PRIVATE)
         setContent {
-            val dark = isSystemInDarkTheme()
+            var themeMode by remember {
+                mutableStateOf(ThemeMode.fromName(prefs.getString("theme", null)))
+            }
+            val dark = when (themeMode) {
+                ThemeMode.System -> isSystemInDarkTheme()
+                ThemeMode.Light -> false
+                ThemeMode.Dark -> true
+            }
             MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Screen()
+                    Screen(
+                        themeMode = themeMode,
+                        onThemeChange = { mode ->
+                            themeMode = mode
+                            prefs.edit().putString("theme", mode.name).apply()
+                        }
+                    )
                 }
             }
         }
     }
 }
 
+private enum class ThemeMode {
+    System, Light, Dark;
+
+    companion object {
+        fun fromName(name: String?): ThemeMode =
+            entries.firstOrNull { it.name == name } ?: ThemeMode.System
+    }
+}
+
 private enum class AppScreen { Main, Log }
 
 @Composable
-private fun Screen() {
+private fun Screen(
+    themeMode: ThemeMode,
+    onThemeChange: (ThemeMode) -> Unit,
+) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("proxy", Context.MODE_PRIVATE) }
 
@@ -177,6 +208,109 @@ private fun Screen() {
             log = { line -> ProxyRuntime.log(line) },
         )
         screen = AppScreen.Log
+    }
+
+    val scope = rememberCoroutineScope()
+    val versionName = remember { Updater.currentVersionName(context) }
+    var updateInfo by remember { mutableStateOf<UpdateCheck.Available?>(null) }
+    var downloadProgress by remember { mutableStateOf<Int?>(null) }
+    var checkingUpdates by remember { mutableStateOf(false) }
+
+    fun openUrl(url: String) {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: Exception) {
+            Toast.makeText(context, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun checkUpdates(manual: Boolean) {
+        if (checkingUpdates) return
+        checkingUpdates = true
+        scope.launch {
+            when (val result = Updater.check(context)) {
+                is UpdateCheck.Available -> updateInfo = result
+                UpdateCheck.UpToDate -> if (manual) {
+                    Toast.makeText(context, "У вас последняя версия", Toast.LENGTH_SHORT).show()
+                }
+                UpdateCheck.Failed -> if (manual) {
+                    Toast.makeText(context, "Не удалось проверить обновления", Toast.LENGTH_SHORT).show()
+                }
+            }
+            checkingUpdates = false
+        }
+    }
+
+    fun startUpdate(info: UpdateCheck.Available) {
+        val apkUrl = info.apkUrl
+        if (apkUrl == null) {
+            openUrl(info.pageUrl)
+            return
+        }
+        if (!Updater.canInstall(context)) {
+            Toast.makeText(
+                context,
+                "Разрешите установку из этого приложения и нажмите «Обновить» снова",
+                Toast.LENGTH_LONG
+            ).show()
+            Updater.openInstallSettings(context)
+            return
+        }
+        scope.launch {
+            downloadProgress = 0
+            try {
+                val file = Updater.download(context, apkUrl) { downloadProgress = it }
+                downloadProgress = null
+                updateInfo = null
+                Updater.install(context, file)
+            } catch (e: Exception) {
+                downloadProgress = null
+                Toast.makeText(
+                    context,
+                    "Не удалось скачать обновление. Попробуйте ссылку.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { checkUpdates(manual = false) }
+
+    updateInfo?.let { info ->
+        AlertDialog(
+            onDismissRequest = { if (downloadProgress == null) updateInfo = null },
+            title = { Text("Доступно обновление") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(info.title, fontWeight = FontWeight.SemiBold)
+                    if (info.notes.isNotBlank()) {
+                        Text(info.notes.trim().take(400), style = MaterialTheme.typography.bodySmall)
+                    }
+                    downloadProgress?.let { percent ->
+                        LinearProgressIndicator(
+                            progress = { percent / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("Скачивание: $percent%", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { startUpdate(info) },
+                    enabled = downloadProgress == null
+                ) { Text("Обновить") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { openUrl(info.pageUrl) }) { Text("Ссылка") }
+                    TextButton(
+                        onClick = { updateInfo = null },
+                        enabled = downloadProgress == null
+                    ) { Text("Позже") }
+                }
+            }
+        )
     }
 
     BackHandler(enabled = screen == AppScreen.Log) { screen = AppScreen.Main }
@@ -313,6 +447,16 @@ private fun Screen() {
             }
         }
 
+        ThemeSelector(themeMode, onThemeChange)
+
+        TextButton(
+            onClick = { checkUpdates(manual = true) },
+            enabled = !checkingUpdates,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (checkingUpdates) "Проверка…" else "Проверить обновления · v$versionName")
+        }
+
         if (logs.isNotEmpty()) {
             Text(
                 logs.last(),
@@ -329,6 +473,46 @@ private fun Screen() {
             )
         }
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun ThemeSelector(
+    current: ThemeMode,
+    onChange: (ThemeMode) -> Unit,
+) {
+    val options = listOf(
+        ThemeMode.System to "Авто",
+        ThemeMode.Light to "Светлая",
+        ThemeMode.Dark to "Тёмная",
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "Тема оформления",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            options.forEach { (mode, label) ->
+                val padding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                if (mode == current) {
+                    Button(
+                        onClick = { onChange(mode) },
+                        contentPadding = padding,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(label, maxLines = 1) }
+                } else {
+                    OutlinedButton(
+                        onClick = { onChange(mode) },
+                        contentPadding = padding,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(label, maxLines = 1) }
+                }
+            }
+        }
     }
 }
 

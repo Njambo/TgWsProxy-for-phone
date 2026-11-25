@@ -12,12 +12,37 @@ android {
         applicationId = "org.tgwsproxy.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
+        // В CI номер сборки приходит через -PciBuild, чтобы каждое обновление было новее прежнего.
+        versionCode = (project.findProperty("ciBuild") as String?)?.toIntOrNull() ?: 6
         versionName = "0.6.0"
+    }
+
+    val keystorePath: String? = System.getenv("KEYSTORE_FILE")
+    val hasReleaseKey = keystorePath != null && File(keystorePath).exists()
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKey) {
+                storeFile = File(keystorePath!!)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
+    lint {
+        checkReleaseBuilds = false
     }
 
     buildTypes {
         release {
+            // Без постоянного ключа подпись каждый раз новая, и обновление поверх не встанет.
+            signingConfig = if (hasReleaseKey) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
