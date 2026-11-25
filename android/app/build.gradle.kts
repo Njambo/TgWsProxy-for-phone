@@ -12,9 +12,16 @@ android {
         applicationId = "org.tgwsproxy.mobile"
         minSdk = 26
         targetSdk = 35
-        // В CI номер сборки приходит через -PciBuild, чтобы каждое обновление было новее прежнего.
-        versionCode = (project.findProperty("ciBuild") as String?)?.toIntOrNull() ?: 6
-        versionName = "0.6.0"
+        // Версия растёт сама: CI передаёт номер запуска как -PciBuild (100 + номер запуска),
+        // а имя версии выглядит как 0.6.<номер запуска>. Базу 0.6 меняйте здесь вручную,
+        // когда нужна новая «большая» версия. Эти же константы читает приложение (BuildConfig).
+        val versionBase = "0.6"
+        val codeOffset = 100
+        val ciBuild = (project.findProperty("ciBuild") as String?)?.toIntOrNull()
+        versionCode = ciBuild ?: 6
+        versionName = if (ciBuild != null) "$versionBase.${ciBuild - codeOffset}" else "$versionBase.0"
+        buildConfigField("String", "VERSION_BASE", "\"$versionBase\"")
+        buildConfigField("int", "CODE_OFFSET", "$codeOffset")
     }
 
     val keystorePath: String? = System.getenv("KEYSTORE_FILE")
@@ -62,6 +69,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

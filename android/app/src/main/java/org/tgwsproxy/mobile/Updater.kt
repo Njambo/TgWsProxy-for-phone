@@ -29,7 +29,7 @@ sealed interface UpdateCheck {
     ) : UpdateCheck
 }
 
-/** Одна запись списка «Что нового»: сборка и её описание (текст коммита). */
+/** Одна запись списка «Что нового»: версия и её описание (текст коммита). */
 data class ReleaseNote(val versionCode: Long?, val title: String, val notes: String)
 
 /**
@@ -50,6 +50,10 @@ object Updater {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
         return PackageInfoCompat.getLongVersionCode(info)
     }
+
+    /** Номер версии вида 0.6.7 по внутреннему номеру (формулу задаёт build.gradle.kts). */
+    fun versionLabel(code: Long): String =
+        "${BuildConfig.VERSION_BASE}.${code - BuildConfig.CODE_OFFSET}"
 
     fun currentVersionName(context: Context): String =
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
@@ -77,7 +81,7 @@ object Updater {
             val base = "https://github.com/$REPO/releases"
             UpdateCheck.Available(
                 versionCode = remote,
-                title = "Сборка $remote",
+                title = versionLabel(remote),
                 notes = "",
                 apkUrl = "$base/download/build-$remote/tgws-mobile-$remote.apk",
                 pageUrl = "$base/tag/build-$remote",

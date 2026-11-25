@@ -55,6 +55,11 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease -PciBuild=${{ env.VERSION_CODE }} --no-daemon --stacktrace
 
+      - name: Version name
+        run: |
+          name=$(jq -r '.elements[0].versionName // empty' android/app/build/outputs/apk/release/output-metadata.json 2>/dev/null || true)
+          echo "VERSION_NAME=${name:-$VERSION_CODE}" >> "$GITHUB_ENV"
+
       - name: Name the APK
         run: cp android/app/build/outputs/apk/release/app-release.apk "tgws-mobile-${{ env.VERSION_CODE }}.apk"
 
@@ -69,7 +74,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ env.VERSION_CODE }}
-          name: Сборка ${{ env.VERSION_CODE }}
+          name: Версия ${{ env.VERSION_NAME }}
           body: ${{ github.event.head_commit.message }}
           files: tgws-mobile-${{ env.VERSION_CODE }}.apk
           make_latest: true

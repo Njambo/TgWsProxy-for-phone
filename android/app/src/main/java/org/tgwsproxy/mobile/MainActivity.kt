@@ -587,7 +587,7 @@ private fun Screen(
             when (val result = Updater.check(context)) {
                 is UpdateCheck.Available -> {
                     updateInfo = result
-                    updateStatus = "Доступно обновление: ${result.title}"
+                    updateStatus = "Доступна версия ${result.title}"
                 }
                 UpdateCheck.UpToDate -> if (manual) {
                     updateStatus = "Установлена последняя версия"
@@ -641,7 +641,7 @@ private fun Screen(
             title = { Text("Доступно обновление") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(info.title, fontWeight = FontWeight.SemiBold)
+                    Text("Версия ${info.title}", fontWeight = FontWeight.SemiBold)
                     if (info.notes.isNotBlank()) {
                         Text(info.notes.trim().take(400), style = MaterialTheme.typography.bodySmall)
                     }
@@ -1047,7 +1047,7 @@ private fun UpdatesScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                "Текущая версия: $versionName (сборка $versionCode)",
+                "Текущая версия: $versionName",
                 style = MaterialTheme.typography.bodyMedium
             )
 
@@ -1101,7 +1101,8 @@ private fun UpdatesScreen(
                             else -> notes.orEmpty().forEach { note ->
                                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     Text(
-                                        note.title + if (note.versionCode == versionCode) " · установлена" else "",
+                                        (note.versionCode?.let { "Версия ${Updater.versionLabel(it)}" } ?: note.title) +
+                                            if (note.versionCode == versionCode) " · установлена" else "",
                                         fontWeight = FontWeight.SemiBold,
                                         style = MaterialTheme.typography.bodyMedium
                                     )
