@@ -437,6 +437,15 @@ private fun Screen(
             modifier = Modifier.fillMaxWidth()
         )
 
+        TextButton(
+            onClick = {
+                openUrl("https://github.com/Njambo/TgWsProxy-for-phone#свой-cloudflare-worker")
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Как создать свой Worker (бесплатно)")
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (running) {
                 Button(

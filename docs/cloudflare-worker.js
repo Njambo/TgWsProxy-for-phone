@@ -3,6 +3,18 @@
 // в поле «Свой Cloudflare Worker». Путь: /apiws?dst=<IP DC>&dc=<номер DC>.
 import { connect } from "cloudflare:sockets";
 
+// Адреса дата-центров Telegram, те же, что в приложении (TelegramDc.tcp).
+// Без этого списка Worker стал бы открытым TCP-прокси к любому адресу:
+// его чужим использованием можно выбрать дневной лимит и подставить владельца.
+const ALLOWED_DST = new Set([
+	"149.154.175.50",
+	"149.154.167.51",
+	"149.154.175.100",
+	"149.154.167.91",
+	"149.154.171.5",
+	"91.105.192.100",
+]);
+
 function toBytes(data) {
 	if (data instanceof ArrayBuffer) {
 		return new Uint8Array(data);
@@ -30,6 +42,9 @@ export default {
 		const dst = url.searchParams.get("dst");
 		if (!dst) {
 			return new Response("Missing dst", { status: 400 });
+		}
+		if (!ALLOWED_DST.has(dst)) {
+			return new Response("Forbidden", { status: 403 });
 		}
 
 		const pair = new WebSocketPair();
