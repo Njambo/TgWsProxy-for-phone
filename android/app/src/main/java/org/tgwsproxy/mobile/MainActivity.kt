@@ -5,11 +5,15 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.media.AudioAttributes
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -46,6 +50,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -53,6 +59,7 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -77,8 +84,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
@@ -90,6 +99,7 @@ import androidx.core.view.WindowCompat
 import kotlinx.coroutines.launch
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -108,6 +118,7 @@ class MainActivity : ComponentActivity() {
                 ReaderMode.On -> true
                 ReaderMode.Off -> false
             }
+            var narratorSettings by remember { mutableStateOf(NarratorSettings.load(prefs)) }
             var palette by remember {
                 mutableStateOf(Palette.fromName(prefs.getString("palette", null)))
             }
@@ -155,6 +166,11 @@ class MainActivity : ComponentActivity() {
                                     prefs.edit().putString("screen_reader", mode.name).apply()
                                 },
                                 systemReader = systemReader,
+                                narratorSettings = narratorSettings,
+                                onNarratorSettingsChange = { value ->
+                                    narratorSettings = value
+                                    value.save(prefs)
+                                },
                             )
                         }
                     }
@@ -265,6 +281,113 @@ private enum class ReaderMode {
     }
 }
 
+private fun ReaderMode.label(): String = when (this) {
+    ReaderMode.Auto -> "Авто"
+    ReaderMode.On -> "Вкл"
+    ReaderMode.Off -> "Выкл"
+}
+
+/** Чем озвучиваются события приложения: голосом TalkBack или собственным голосом. */
+private enum class NarratorSource { TalkBack, App }
+
+/** Настройки диктора. Хранятся в SharedPreferences вместе с остальными. */
+private data class NarratorSettings(
+    val source: NarratorSource = NarratorSource.TalkBack,
+    val voiceName: String = "",
+    val rate: Float = 1.0f,
+    val pitch: Float = 1.0f,
+) {
+    fun save(prefs: SharedPreferences) {
+        prefs.edit()
+            .putString("narrator_source", source.name)
+            .putString("narrator_voice", voiceName)
+            .putFloat("narrator_rate", rate)
+            .putFloat("narrator_pitch", pitch)
+            .apply()
+    }
+
+    companion object {
+        fun load(prefs: SharedPreferences) = NarratorSettings(
+            source = NarratorSource.entries
+                .firstOrNull { it.name == prefs.getString("narrator_source", null) }
+                ?: NarratorSource.TalkBack,
+            voiceName = prefs.getString("narrator_voice", "") ?: "",
+            rate = prefs.getFloat("narrator_rate", 1.0f),
+            pitch = prefs.getFloat("narrator_pitch", 1.0f),
+        )
+    }
+}
+
+/**
+ * Собственный голос приложения на системном синтезе речи (TextToSpeech).
+ * Голос самого TalkBack он не меняет: тот настраивается только в системе.
+ */
+private class Narrator(private val context: Context) {
+    private var tts: TextToSpeech? = null
+    private var ready = false
+    private val queued = ArrayList<() -> Unit>()
+
+    private fun whenReady(action: () -> Unit) {
+        if (ready) {
+            action()
+            return
+        }
+        queued += action
+        if (tts == null) {
+            tts = TextToSpeech(context.applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    ready = true
+                    tts?.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    queued.toList().forEach { it() }
+                }
+                queued.clear()
+            }
+        }
+    }
+
+    fun speak(text: String, settings: NarratorSettings) = whenReady {
+        val engine = tts ?: return@whenReady
+        val voice = engine.voices.orEmpty().firstOrNull { it.name == settings.voiceName }
+            ?: engine.defaultVoice
+        if (voice != null) engine.voice = voice
+        engine.setSpeechRate(settings.rate)
+        engine.setPitch(settings.pitch)
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tgws-narrator")
+    }
+
+    /** Голоса на русском и на языке системы, по порядку имён. */
+    fun loadVoices(onLoaded: (List<Voice>) -> Unit) = whenReady {
+        val language = Locale.getDefault().language
+        onLoaded(
+            tts?.voices.orEmpty()
+                .filter { it.locale.language == "ru" || it.locale.language == language }
+                .sortedBy { it.name }
+        )
+    }
+
+    fun shutdown() {
+        tts?.stop()
+        tts?.shutdown()
+        tts = null
+        ready = false
+        queued.clear()
+    }
+}
+
+private fun voiceLabel(voice: Voice, index: Int): String {
+    val ru = Locale("ru")
+    val language = voice.locale.getDisplayLanguage(ru)
+    val country = voice.locale.getDisplayCountry(ru)
+    val place = if (country.isBlank()) language else "$language ($country)"
+    val online = if (voice.isNetworkConnectionRequired) " · онлайн" else ""
+    return "$place · голос ${index + 1}$online"
+}
+
 /** true, если режим для экранного диктора действует прямо сейчас. */
 private val LocalScreenReaderMode = staticCompositionLocalOf { false }
 
@@ -282,7 +405,7 @@ private fun rememberSystemScreenReader(): Boolean {
     return enabled
 }
 
-private enum class AppScreen { Main, Log, Settings, Themes }
+private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates }
 
 @Composable
 private fun Screen(
@@ -293,6 +416,8 @@ private fun Screen(
     readerMode: ReaderMode,
     onReaderModeChange: (ReaderMode) -> Unit,
     systemReader: Boolean,
+    narratorSettings: NarratorSettings,
+    onNarratorSettingsChange: (NarratorSettings) -> Unit,
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("proxy", Context.MODE_PRIVATE) }
@@ -386,17 +511,26 @@ private fun Screen(
 
     val view = LocalView.current
     val readerActive = LocalScreenReaderMode.current
+    val narrator = remember { Narrator(context) }
+    DisposableEffect(Unit) { onDispose { narrator.shutdown() } }
+    fun announce(text: String) {
+        if (narratorSettings.source == NarratorSource.App) {
+            narrator.speak(text, narratorSettings)
+        } else {
+            view.announceForAccessibility(text)
+        }
+    }
     var lastRunning by remember { mutableStateOf(running) }
     LaunchedEffect(running) {
         if (running != lastRunning) {
             lastRunning = running
             if (readerActive) {
-                view.announceForAccessibility(if (running) "Прокси запущен" else "Прокси остановлен")
+                announce(if (running) "Прокси запущен" else "Прокси остановлен")
             }
         }
     }
     LaunchedEffect(route) {
-        if (readerActive && route != null) view.announceForAccessibility("Канал: $route")
+        if (readerActive && route != null) announce("Канал: $route")
     }
 
     val scope = rememberCoroutineScope()
@@ -404,6 +538,11 @@ private fun Screen(
     var updateInfo by remember { mutableStateOf<UpdateCheck.Available?>(null) }
     var downloadProgress by remember { mutableStateOf<Int?>(null) }
     var checkingUpdates by remember { mutableStateOf(false) }
+    var updateStatus by remember { mutableStateOf<String?>(null) }
+    var releaseNotes by remember { mutableStateOf<List<ReleaseNote>?>(null) }
+    var notesLoading by remember { mutableStateOf(false) }
+    var notesFailed by remember { mutableStateOf(false) }
+    val versionCode = remember { Updater.currentVersionCode(context) }
 
     fun openUrl(url: String) {
         try {
@@ -421,21 +560,40 @@ private fun Screen(
         }
     }
 
+    fun openSpeechSettings() {
+        try {
+            context.startActivity(Intent("com.android.settings.TTS_SETTINGS"))
+        } catch (_: Exception) {
+            openAccessibilitySettings()
+        }
+    }
+
+    fun loadNotes() {
+        if (releaseNotes != null || notesLoading) return
+        notesLoading = true
+        notesFailed = false
+        scope.launch {
+            val notes = Updater.loadReleaseNotes()
+            releaseNotes = notes
+            notesFailed = notes == null
+            notesLoading = false
+        }
+    }
+
     fun checkUpdates(manual: Boolean) {
         if (checkingUpdates) return
         checkingUpdates = true
         scope.launch {
             when (val result = Updater.check(context)) {
-                is UpdateCheck.Available -> updateInfo = result
+                is UpdateCheck.Available -> {
+                    updateInfo = result
+                    updateStatus = "Доступно обновление: ${result.title}"
+                }
                 UpdateCheck.UpToDate -> if (manual) {
-                    Toast.makeText(context, "У вас последняя версия", Toast.LENGTH_SHORT).show()
+                    updateStatus = "Установлена последняя версия"
                 }
                 is UpdateCheck.Failed -> if (manual) {
-                    Toast.makeText(
-                        context,
-                        "Не удалось проверить обновления: ${result.reason}",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    updateStatus = "Не удалось проверить: ${result.reason}"
                 }
             }
             checkingUpdates = false
@@ -515,7 +673,13 @@ private fun Screen(
     }
 
     BackHandler(enabled = screen != AppScreen.Main) {
-        screen = if (screen == AppScreen.Themes) AppScreen.Settings else AppScreen.Main
+        screen = if (
+            screen == AppScreen.Themes || screen == AppScreen.Dictor || screen == AppScreen.Updates
+        ) {
+            AppScreen.Settings
+        } else {
+            AppScreen.Main
+        }
     }
 
     if (screen == AppScreen.Settings) {
@@ -524,13 +688,43 @@ private fun Screen(
             palette = palette,
             onOpenThemes = { screen = AppScreen.Themes },
             versionName = versionName,
-            checkingUpdates = checkingUpdates,
-            onCheckUpdates = { checkUpdates(manual = true) },
+            updateAvailable = updateInfo != null,
+            onOpenUpdates = { screen = AppScreen.Updates },
+            dictorSummary = "${readerMode.label()} · " +
+                if (narratorSettings.source == NarratorSource.App) "голос приложения" else "через TalkBack",
+            onOpenDictor = { screen = AppScreen.Dictor },
+            onBack = { screen = AppScreen.Main },
+        )
+        return
+    }
+
+    if (screen == AppScreen.Updates) {
+        UpdatesScreen(
+            versionName = versionName,
+            versionCode = versionCode,
+            checking = checkingUpdates,
+            status = updateStatus,
+            onCheck = { checkUpdates(manual = true) },
+            notes = releaseNotes,
+            notesLoading = notesLoading,
+            notesFailed = notesFailed,
+            onLoadNotes = { loadNotes() },
+            onBack = { screen = AppScreen.Settings },
+        )
+        return
+    }
+
+    if (screen == AppScreen.Dictor) {
+        DictorScreen(
             readerMode = readerMode,
             onReaderModeChange = onReaderModeChange,
             systemReader = systemReader,
+            settings = narratorSettings,
+            onSettingsChange = onNarratorSettingsChange,
+            narrator = narrator,
             onOpenAccessibility = { openAccessibilitySettings() },
-            onBack = { screen = AppScreen.Main },
+            onOpenSpeech = { openSpeechSettings() },
+            onBack = { screen = AppScreen.Settings },
         )
         return
     }
@@ -726,12 +920,10 @@ private fun SettingsScreen(
     palette: Palette,
     onOpenThemes: () -> Unit,
     versionName: String,
-    checkingUpdates: Boolean,
-    onCheckUpdates: () -> Unit,
-    readerMode: ReaderMode,
-    onReaderModeChange: (ReaderMode) -> Unit,
-    systemReader: Boolean,
-    onOpenAccessibility: () -> Unit,
+    updateAvailable: Boolean,
+    onOpenUpdates: () -> Unit,
+    dictorSummary: String,
+    onOpenDictor: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -777,13 +969,214 @@ private fun SettingsScreen(
                 Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
             }
 
+            OutlinedButton(
+                onClick = onOpenDictor,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Диктор")
+                    Text(
+                        dictorSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            }
+
+            OutlinedButton(
+                onClick = onOpenUpdates,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Обновления")
+                    Text(
+                        if (updateAvailable) "Доступно обновление" else "Версия $versionName",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdatesScreen(
+    versionName: String,
+    versionCode: Long,
+    checking: Boolean,
+    status: String?,
+    onCheck: () -> Unit,
+    notes: List<ReleaseNote>?,
+    notesLoading: Boolean,
+    notesFailed: Boolean,
+    onLoadNotes: () -> Unit,
+    onBack: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    LaunchedEffect(expanded) { if (expanded) onLoadNotes() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Обновления",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "Текущая версия: $versionName (сборка $versionCode)",
+                style = MaterialTheme.typography.bodyMedium
+            )
+
+            OutlinedButton(
+                onClick = onCheck,
+                enabled = !checking,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (checking) "Проверка…" else "Проверить обновления")
+            }
+
+            if (status != null) {
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { expanded = !expanded },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { stateDescription = if (expanded) "Развёрнуто" else "Свёрнуто" }
+                ) {
+                    Text("Что нового", modifier = Modifier.weight(1f))
+                    Text(if (expanded) "▴" else "▾", modifier = Modifier.clearAndSetSemantics { })
+                }
+
+                if (expanded) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        when {
+                            notesLoading || (notes == null && !notesFailed) ->
+                                Text("Загрузка…", style = MaterialTheme.typography.bodySmall)
+                            notesFailed ->
+                                Text(
+                                    "Не удалось загрузить список изменений. Проверьте подключение к интернету.",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            notes.isNullOrEmpty() ->
+                                Text("Описаний пока нет.", style = MaterialTheme.typography.bodySmall)
+                            else -> notes.orEmpty().forEach { note ->
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        note.title + if (note.versionCode == versionCode) " · установлена" else "",
+                                        fontWeight = FontWeight.SemiBold,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        note.notes.ifBlank { "Без описания" },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DictorScreen(
+    readerMode: ReaderMode,
+    onReaderModeChange: (ReaderMode) -> Unit,
+    systemReader: Boolean,
+    settings: NarratorSettings,
+    onSettingsChange: (NarratorSettings) -> Unit,
+    narrator: Narrator,
+    onOpenAccessibility: () -> Unit,
+    onOpenSpeech: () -> Unit,
+    onBack: () -> Unit,
+) {
+    var voices by remember { mutableStateOf<List<Voice>>(emptyList()) }
+    var voicesLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(settings.source) {
+        if (settings.source == NarratorSource.App) {
+            narrator.loadVoices { list ->
+                voices = list
+                voicesLoaded = true
+            }
+        }
+    }
+    var rate by remember(settings.rate) { mutableStateOf(settings.rate) }
+    var pitch by remember(settings.pitch) { mutableStateOf(settings.pitch) }
+    var menuOpen by remember { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Диктор",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
             OptionSelector(
                 title = "Режим для экранного диктора (TalkBack)",
-                options = listOf(
-                    ReaderMode.Auto to "Авто",
-                    ReaderMode.On to "Вкл",
-                    ReaderMode.Off to "Выкл",
-                ),
+                options = ReaderMode.entries.map { it to it.label() },
                 current = readerMode,
                 onChange = onReaderModeChange,
             )
@@ -805,19 +1198,121 @@ private fun SettingsScreen(
                 Text("Открыть настройки TalkBack")
             }
 
-            OutlinedButton(
-                onClick = onCheckUpdates,
-                enabled = !checkingUpdates,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (checkingUpdates) "Проверка…" else "Проверить обновления")
-            }
-
+            OptionSelector(
+                title = "Чем озвучивать события приложения",
+                options = listOf(
+                    NarratorSource.TalkBack to "TalkBack",
+                    NarratorSource.App to "Голос приложения",
+                ),
+                current = settings.source,
+                onChange = { onSettingsChange(settings.copy(source = it)) },
+            )
             Text(
-                "Версия $versionName",
+                if (settings.source == NarratorSource.TalkBack) {
+                    "События читает TalkBack своим голосом. Голос, скорость и язык самого " +
+                        "TalkBack меняются в системных настройках синтеза речи."
+                } else {
+                    "События читает само приложение выбранным ниже голосом. Голос самого " +
+                        "TalkBack это не меняет: он настраивается в системных настройках."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            OutlinedButton(
+                onClick = onOpenSpeech,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Системные настройки синтеза речи")
+            }
+
+            if (settings.source == NarratorSource.App) {
+                val currentLabel = voices.withIndex()
+                    .firstOrNull { it.value.name == settings.voiceName }
+                    ?.let { voiceLabel(it.value, it.index) }
+                    ?: "По умолчанию"
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "Голос",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Box {
+                        OutlinedButton(
+                            onClick = { menuOpen = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(currentLabel, maxLines = 1, modifier = Modifier.weight(1f))
+                            Text("▾", modifier = Modifier.clearAndSetSemantics { })
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("По умолчанию") },
+                                onClick = {
+                                    onSettingsChange(settings.copy(voiceName = ""))
+                                    menuOpen = false
+                                }
+                            )
+                            voices.forEachIndexed { index, voice ->
+                                DropdownMenuItem(
+                                    text = { Text(voiceLabel(voice, index)) },
+                                    onClick = {
+                                        onSettingsChange(settings.copy(voiceName = voice.name))
+                                        menuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    if (voicesLoaded && voices.isEmpty()) {
+                        Text(
+                            "Голоса не найдены. Установите синтез речи в системных настройках.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Скорость речи: ${"%.1f".format(rate)}×",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Slider(
+                        value = rate,
+                        onValueChange = { rate = it },
+                        onValueChangeFinished = { onSettingsChange(settings.copy(rate = rate)) },
+                        valueRange = 0.5f..2.0f,
+                        steps = 14
+                    )
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Тон голоса: ${"%.1f".format(pitch)}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Slider(
+                        value = pitch,
+                        onValueChange = { pitch = it },
+                        onValueChangeFinished = { onSettingsChange(settings.copy(pitch = pitch)) },
+                        valueRange = 0.5f..2.0f,
+                        steps = 14
+                    )
+                }
+
+                Button(
+                    onClick = { narrator.speak("Проверка озвучки. Прокси запущен.", settings) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Проверить озвучку")
+                }
+            }
         }
     }
 }

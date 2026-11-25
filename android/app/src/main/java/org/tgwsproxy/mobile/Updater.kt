@@ -4,14 +4,18 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.text.Html
+import android.util.Xml
 import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import org.xmlpull.v1.XmlPullParser
 
 sealed interface UpdateCheck {
     data object UpToDate : UpdateCheck
@@ -24,6 +28,9 @@ sealed interface UpdateCheck {
         val pageUrl: String,
     ) : UpdateCheck
 }
+
+/** Одна запись списка «Что нового»: сборка и её описание (текст коммита). */
+data class ReleaseNote(val versionCode: Long?, val title: String, val notes: String)
 
 /**
  * Проверка обновлений через GitHub Releases.
@@ -81,6 +88,63 @@ object Updater {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /**
+     * Последние релизы с описаниями из ленты `releases.atom`. Это обычная страница
+     * github.com, а не API, поэтому лимит 60 запросов в час на неё не действует.
+     * null, если список получить не удалось.
+     */
+    suspend fun loadReleaseNotes(limit: Int = 5): List<ReleaseNote>? = withContext(Dispatchers.IO) {
+        val conn = URL("https://github.com/$REPO/releases.atom").openConnection() as HttpURLConnection
+        try {
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
+            conn.setRequestProperty("User-Agent", "TgWsProxyMobile")
+            if (conn.responseCode != 200) return@withContext null
+            parseReleaseFeed(conn.inputStream, limit)
+        } catch (_: Exception) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun parseReleaseFeed(stream: InputStream, limit: Int): List<ReleaseNote> {
+        val parser = Xml.newPullParser()
+        parser.setInput(stream, null)
+        val result = ArrayList<ReleaseNote>()
+        var inEntry = false
+        var title = ""
+        var content = ""
+        var href = ""
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT && result.size < limit) {
+            if (event == XmlPullParser.START_TAG) {
+                when (parser.name) {
+                    "entry" -> {
+                        inEntry = true
+                        title = ""
+                        content = ""
+                        href = ""
+                    }
+                    "title" -> if (inEntry) title = parser.nextText()
+                    "content" -> if (inEntry) content = parser.nextText()
+                    "link" -> if (inEntry && parser.getAttributeValue(null, "rel") == "alternate") {
+                        href = parser.getAttributeValue(null, "href") ?: ""
+                    }
+                }
+            } else if (event == XmlPullParser.END_TAG && parser.name == "entry") {
+                inEntry = false
+                result += ReleaseNote(
+                    versionCode = TAG_RE.find(href)?.groupValues?.get(1)?.toLongOrNull(),
+                    title = title.trim(),
+                    notes = Html.fromHtml(content, Html.FROM_HTML_MODE_COMPACT).toString().trim(),
+                )
+            }
+            event = parser.next()
+        }
+        return result
     }
 
     /** Скачивает APK во внутренний кэш приложения. onProgress получает 0..100. */
