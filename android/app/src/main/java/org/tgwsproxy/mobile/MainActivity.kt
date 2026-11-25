@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -54,6 +55,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -65,11 +67,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import kotlinx.coroutines.launch
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
@@ -87,18 +91,35 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.Light -> false
                 ThemeMode.Dark -> true
             }
+            val view = LocalView.current
+            SideEffect {
+                // С Android 15 приложение рисуется под системными панелями:
+                // подбираем цвет их значков под выбранную тему.
+                if (Build.VERSION.SDK_INT >= 35) {
+                    val controller = WindowCompat.getInsetsController(window, view)
+                    controller.isAppearanceLightStatusBars = !dark
+                    controller.isAppearanceLightNavigationBars = !dark
+                }
+            }
             MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Screen(
-                        themeMode = themeMode,
-                        onThemeChange = { mode ->
-                            themeMode = mode
-                            prefs.edit().putString("theme", mode.name).apply()
-                        }
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .safeDrawingPadding()
+                            .padding(top = 8.dp)
+                    ) {
+                        Screen(
+                            themeMode = themeMode,
+                            onThemeChange = { mode ->
+                                themeMode = mode
+                                prefs.edit().putString("theme", mode.name).apply()
+                            }
+                        )
+                    }
                 }
             }
         }
