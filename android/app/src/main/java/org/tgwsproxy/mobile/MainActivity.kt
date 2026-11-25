@@ -21,6 +21,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -92,6 +93,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -1452,6 +1454,29 @@ private fun <T> OptionSelector(
     }
 }
 
+/** Кнопка панели действий журнала: одинаковая высота, обводка, подпись в 1–2 строки. */
+@Composable
+private fun LogActionButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(52.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+    ) {
+        Text(
+            label,
+            fontSize = 14.sp,
+            lineHeight = 16.sp,
+            maxLines = 2,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
 @Composable
 private fun LogScreen(
     logCount: Int,
@@ -1496,12 +1521,12 @@ private fun LogScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            TextButton(onClick = onProbe) { Text("Проверить связь") }
-            TextButton(onClick = onCopy) { Text("Копировать") }
-            TextButton(onClick = onClear) { Text("Очистить") }
+            LogActionButton("Проверить связь", onProbe, Modifier.weight(1f))
+            LogActionButton("Копировать", onCopy, Modifier.weight(1f))
+            LogActionButton("Очистить", onClear, Modifier.weight(1f))
         }
 
         Box(
