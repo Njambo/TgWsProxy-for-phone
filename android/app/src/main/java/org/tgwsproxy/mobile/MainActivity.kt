@@ -11,6 +11,7 @@ import android.net.Uri
 import android.media.AudioAttributes
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
@@ -586,16 +587,19 @@ private fun Screen(
         if (checkingUpdates) return
         checkingUpdates = true
         scope.launch {
-            when (val result = Updater.check(context)) {
+            val started = SystemClock.elapsedRealtime()
+            val result = Updater.check(context)
+            val took = " · ${"%.1f".format((SystemClock.elapsedRealtime() - started) / 1000.0)} с"
+            when (result) {
                 is UpdateCheck.Available -> {
                     updateInfo = result
-                    updateStatus = "Доступна версия ${result.title}"
+                    updateStatus = "Доступна версия ${result.title}$took"
                 }
                 UpdateCheck.UpToDate -> if (manual) {
-                    updateStatus = "Установлена последняя версия"
+                    updateStatus = "Установлена последняя версия$took"
                 }
                 is UpdateCheck.Failed -> if (manual) {
-                    updateStatus = "Не удалось проверить: ${result.reason}"
+                    updateStatus = "Не удалось проверить: ${result.reason}$took"
                 }
             }
             checkingUpdates = false

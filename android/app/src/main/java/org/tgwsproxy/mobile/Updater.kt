@@ -63,8 +63,8 @@ object Updater {
             .openConnection() as HttpURLConnection
         try {
             conn.instanceFollowRedirects = false
-            conn.connectTimeout = 10_000
-            conn.readTimeout = 10_000
+            conn.connectTimeout = 5_000
+            conn.readTimeout = 6_000
             conn.setRequestProperty("User-Agent", "TgWsProxyMobile")
 
             val code = conn.responseCode
