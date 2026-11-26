@@ -17,6 +17,14 @@ import javax.net.ssl.SSLException
 /** Failure tagged with the stage it happened at: TCP, DNS, TLS or WS. */
 internal class StageError(val stage: String, message: String) : IOException(message)
 
+/** Cloudflare anycast edges that the camouflage routes dial directly. */
+internal val CLOUDFLARE_ANYCAST = listOf(
+    "104.16.0.1",
+    "104.17.0.1",
+    "104.18.0.1",
+    "188.114.96.1",
+)
+
 /** Telegram DC entry points. Mirrors the reference proxy's tables. */
 internal object TelegramDc {
     val tcp: Map<Int, String> = mapOf(
@@ -69,7 +77,12 @@ internal class TransportRouter(
     private val pool: ExecutorService,
     private val workerDomains: List<String> = emptyList(),
     private val onRoute: (String?) -> Unit = {},
+    customIps: List<CustomIp> = emptyList(),
 ) {
+    /** Адреса, добавленные пользователем на экране «Терминал». */
+    private val customGateway = customIps.filter { it.kind == IpKind.Gateway }.map { it.ip }
+    private val customCloudflare = customIps.filter { it.kind == IpKind.Cloudflare }.map { it.ip }
+
     private val preferred = ConcurrentHashMap<String, WsRoute>()
     private val backoffUntil = ConcurrentHashMap<String, Long>()
     private val failures = ConcurrentHashMap<String, Int>()
@@ -199,21 +212,30 @@ internal class TransportRouter(
         return winner.get()
     }
 
-    /** Pinned gateway IP, plain and fronted. No DNS lookup of the kws name. */
+    /** Pinned gateway IPs, plain and fronted: the built-in one plus the user's own. */
     private fun directRoutes(dc: Int, media: Boolean): List<WsRoute> {
+        val routes = ArrayList<WsRoute>()
+        TelegramDc.wsRedirect[dc]?.let { routes += gatewayRoutes(it, dc, media, own = false) }
+        for (ip in customGateway) routes += gatewayRoutes(ip, dc, media, own = true)
+        return routes
+    }
+
+    /** One gateway IP with the `kwsN` names as SNI/Host. No DNS lookup of the name. */
+    private fun gatewayRoutes(ip: String, dc: Int, media: Boolean, own: Boolean): List<WsRoute> {
         val index = if (dc == 203) 2 else dc
-        val redirect = TelegramDc.wsRedirect[dc] ?: return emptyList()
         val names = if (media) {
             listOf("kws$index-1.web.telegram.org", "kws$index.web.telegram.org")
         } else {
             listOf("kws$index.web.telegram.org")
         }
+        val tag = if (own) "Свой IP" else "IP"
+        val fronting = if (own) "SNI-маскировка $FRONTING_SNI → $ip" else "SNI-маскировка $FRONTING_SNI"
         val routes = ArrayList<WsRoute>(names.size * 2)
         for (name in names) {
-            routes += WsRoute("IP $redirect ($name)", redirect, name, name, timeoutMs = 8_000)
+            routes += WsRoute("$tag $ip ($name)", ip, name, name, timeoutMs = 8_000)
             routes += WsRoute(
-                "SNI-маскировка $FRONTING_SNI ($name)",
-                redirect, FRONTING_SNI, name,
+                "$fronting ($name)",
+                ip, FRONTING_SNI, name,
                 verifyHostname = false, timeoutMs = 7_000,
             )
         }
@@ -245,7 +267,7 @@ internal class TransportRouter(
         val routes = ArrayList<WsRoute>(CF_ANYCAST.size * CF_IP_DOMAINS.size)
         for (domain in CF_IP_DOMAINS) {
             val name = "$prefix.$domain"
-            for (ip in CF_ANYCAST) {
+            for (ip in CF_ANYCAST + customCloudflare) {
                 if (secure) {
                     routes += WsRoute("CF-IP $ip ($name)", ip, name, name, timeoutMs = 9_000)
                 } else {
@@ -345,12 +367,7 @@ internal class TransportRouter(
         )
 
         /** Any Cloudflare anycast edge serves any hosted zone (SNI picks it). */
-        val CF_ANYCAST = listOf(
-            "104.16.0.1",
-            "104.17.0.1",
-            "104.18.0.1",
-            "188.114.96.1",
-        )
+        val CF_ANYCAST = CLOUDFLARE_ANYCAST
 
         /** Camouflage zones dialled by fixed IP, so no DNS is involved. */
         val CF_IP_DOMAINS = listOf(
@@ -398,10 +415,11 @@ internal object RouteProbe {
         workerDomains: List<String> = emptyList(),
         log: (String) -> Unit,
         onDone: () -> Unit = {},
+        customIps: List<CustomIp> = emptyList(),
     ) {
         Thread({
             try {
-                run(secret, workerDomains, log)
+                run(secret, workerDomains, log, customIps)
             } catch (exception: Exception) {
                 log("Проверка прервана: ${shortError(exception)}")
             } finally {
@@ -410,12 +428,17 @@ internal object RouteProbe {
         }, "route-probe").apply { isDaemon = true }.start()
     }
 
-    fun run(secret: ByteArray, workerDomains: List<String>, log: (String) -> Unit) {
+    fun run(
+        secret: ByteArray,
+        workerDomains: List<String>,
+        log: (String) -> Unit,
+        customIps: List<CustomIp> = emptyList(),
+    ) {
         log("Проверка канала до Telegram (DC2)…")
         val executor = Executors.newCachedThreadPool()
         var socket: RawWebSocket? = null
         try {
-            val router = TransportRouter(log, executor, workerDomains)
+            val router = TransportRouter(log, executor, workerDomains, customIps = customIps)
             socket = router.probe(2, media = false)
             if (socket == null) {
                 log("Итог проверки: ни один WebSocket-маршрут не открылся")

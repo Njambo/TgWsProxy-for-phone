@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import org.tgwsproxy.mobile.core.ProxyServer
+import org.tgwsproxy.mobile.core.parseCustomIps
 import org.tgwsproxy.mobile.core.parseDomains
 
 class ProxyService : Service() {
@@ -29,6 +30,9 @@ class ProxyService : Service() {
         val port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
         val secretHex = intent?.getStringExtra(EXTRA_SECRET)
         val workerDomains = parseDomains(intent?.getStringExtra(EXTRA_WORKER))
+        val customIps = parseCustomIps(
+            getSharedPreferences("proxy", Context.MODE_PRIVATE).getString("custom_ips", null)
+        )
         if (secretHex == null) {
             stopSelf()
             return START_NOT_STICKY
@@ -48,9 +52,11 @@ class ProxyService : Service() {
             port = port,
             secret = hexToBytes(secretHex),
             workerDomains = workerDomains,
+            customIps = customIps,
             onRoute = { route -> ProxyRuntime.setRoute(route) },
         ) { line -> ProxyRuntime.log(line) }
         server = instance
+        if (customIps.isNotEmpty()) ProxyRuntime.log("Свои IP-адреса: ${customIps.size}")
         try {
             instance.start()
         } catch (exception: Exception) {

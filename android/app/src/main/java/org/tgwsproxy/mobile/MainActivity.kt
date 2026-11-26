@@ -100,6 +100,15 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import org.tgwsproxy.mobile.core.CLOUDFLARE_ANYCAST
+import org.tgwsproxy.mobile.core.CustomIp
+import org.tgwsproxy.mobile.core.IpKind
+import org.tgwsproxy.mobile.core.TelegramDc
+import org.tgwsproxy.mobile.core.encodeCustomIps
+import org.tgwsproxy.mobile.core.ipError
+import org.tgwsproxy.mobile.core.parseCustomIps
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
 import java.util.Locale
@@ -408,7 +417,7 @@ private fun rememberSystemScreenReader(): Boolean {
     return enabled
 }
 
-private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates }
+private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates, Terminal }
 
 @Composable
 private fun Screen(
@@ -508,6 +517,7 @@ private fun Screen(
             hexToBytes(secretHex),
             parseDomains(workerDomain),
             log = { line -> ProxyRuntime.log(line) },
+            customIps = customIps,
         )
         screen = AppScreen.Log
     }
@@ -546,6 +556,24 @@ private fun Screen(
     var notesLoading by remember { mutableStateOf(false) }
     var notesFailed by remember { mutableStateOf(false) }
     val versionCode = remember { Updater.currentVersionCode(context) }
+    var customIps by remember { mutableStateOf(parseCustomIps(prefs.getString("custom_ips", null))) }
+
+    /** Возвращает текст ошибки или null, если адрес добавлен. */
+    fun addCustomIp(rawIp: String, kind: IpKind): String? {
+        val ip = rawIp.trim()
+        ipError(ip)?.let { return it }
+        val builtIn = TelegramDc.tcp.values + TelegramDc.wsRedirect.values + CLOUDFLARE_ANYCAST
+        if (ip in builtIn) return "Этот адрес уже встроен в приложение"
+        if (customIps.any { it.ip == ip }) return "Такой адрес уже добавлен"
+        customIps = customIps + CustomIp(ip, kind)
+        prefs.edit().putString("custom_ips", encodeCustomIps(customIps)).apply()
+        return null
+    }
+
+    fun removeCustomIp(item: CustomIp) {
+        customIps = customIps - item
+        prefs.edit().putString("custom_ips", encodeCustomIps(customIps)).apply()
+    }
 
     fun openUrl(url: String) {
         try {
@@ -746,6 +774,18 @@ private fun Screen(
         return
     }
 
+    if (screen == AppScreen.Terminal) {
+        TerminalScreen(
+            route = route,
+            running = running,
+            customIps = customIps,
+            onAdd = { ip, kind -> addCustomIp(ip, kind) },
+            onRemove = { item -> removeCustomIp(item) },
+            onBack = { screen = AppScreen.Main },
+        )
+        return
+    }
+
     if (screen == AppScreen.Log) {
         LogScreen(
             logCount = logs.size,
@@ -894,10 +934,10 @@ private fun Screen(
                 Text(if (logs.isEmpty()) "Журнал" else "Журнал · ${logs.size}")
             }
             OutlinedButton(
-                onClick = { runProbe() },
+                onClick = { screen = AppScreen.Terminal },
                 modifier = Modifier.weight(1f)
             ) {
-                Text("Проверить связь")
+                Text("Терминал")
             }
         }
 
@@ -1003,6 +1043,225 @@ private fun SettingsScreen(
                     )
                 }
                 Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            }
+        }
+    }
+}
+
+@Composable
+private fun TerminalScreen(
+    route: String?,
+    running: Boolean,
+    customIps: List<CustomIp>,
+    onAdd: (String, IpKind) -> String?,
+    onRemove: (CustomIp) -> Unit,
+    onBack: () -> Unit,
+) {
+    var input by remember { mutableStateOf("") }
+    var kind by remember { mutableStateOf(IpKind.Gateway) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Терминал",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "Сейчас используется",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    route ?: "Нет активного подключения",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Мои IP-адреса",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.semantics { heading() }
+                )
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { value ->
+                        input = value.filter { it.isDigit() || it == '.' }.take(15)
+                        error = null
+                    },
+                    label = { Text("IP-адрес") },
+                    placeholder = { Text("например 104.19.0.1") },
+                    singleLine = true,
+                    isError = error != null,
+                    supportingText = { error?.let { Text(it) } },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OptionSelector(
+                    title = "Тип адреса",
+                    options = listOf(
+                        IpKind.Gateway to "Шлюз Telegram",
+                        IpKind.Cloudflare to "Cloudflare",
+                    ),
+                    current = kind,
+                    onChange = { kind = it },
+                )
+                Text(
+                    if (kind == IpKind.Gateway) {
+                        "Шлюз Telegram: приложение подключится к этому адресу как к серверу " +
+                            "WebSocket Telegram для любого дата-центра."
+                    } else {
+                        "Cloudflare: приложение пойдёт через этот узел по маскировочным " +
+                            "доменам, как через встроенные узлы Cloudflare."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Button(
+                    onClick = {
+                        val problem = onAdd(input, kind)
+                        if (problem == null) {
+                            input = ""
+                            error = null
+                        } else {
+                            error = problem
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Добавить")
+                }
+
+                if (customIps.isEmpty()) {
+                    Text(
+                        "Своих адресов пока нет.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                customIps.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                            .padding(start = 12.dp, top = 2.dp, bottom = 2.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics(mergeDescendants = true) { }
+                        ) {
+                            Text(item.ip, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                            Text(
+                                if (item.kind == IpKind.Gateway) "Шлюз Telegram" else "Cloudflare",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(
+                            onClick = { onRemove(item) },
+                            modifier = Modifier.semantics { contentDescription = "Удалить ${item.ip}" }
+                        ) { Text("Удалить", modifier = Modifier.clearAndSetSemantics { }) }
+                    }
+                }
+                Text(
+                    if (running) {
+                        "Прокси запущен: чтобы изменения заработали, остановите его и запустите снова."
+                    } else {
+                        "Изменения применятся при следующем запуске прокси."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Встроенные адреса",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.semantics { heading() }
+                )
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        AddressGroup(
+                            "Дата-центры Telegram (запасной путь и Worker)",
+                            TelegramDc.tcp.entries.sortedBy { it.key }.map { "DC${it.key}" to it.value }
+                        )
+                        AddressGroup(
+                            "Шлюз WebSocket Telegram",
+                            TelegramDc.wsRedirect.entries.groupBy({ it.value }, { it.key }).map { (ip, dcs) ->
+                                "DC${dcs.sorted().joinToString(", DC")}" to ip
+                            }
+                        )
+                        AddressGroup(
+                            "Узлы Cloudflare (маскировка)",
+                            CLOUDFLARE_ANYCAST.map { "" to it }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddressGroup(title: String, rows: List<Pair<String, String>>) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            rows.forEach { (label, ip) ->
+                Row(modifier = Modifier.semantics(mergeDescendants = true) { }) {
+                    if (label.isNotEmpty()) {
+                        Text(
+                            label,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(88.dp)
+                        )
+                    }
+                    Text(ip, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                }
             }
         }
     }

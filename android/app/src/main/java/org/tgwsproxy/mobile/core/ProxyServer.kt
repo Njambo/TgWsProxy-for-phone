@@ -19,11 +19,12 @@ internal class ProxyServer(
     private val port: Int,
     private val secret: ByteArray,
     private val workerDomains: List<String> = emptyList(),
+    private val customIps: List<CustomIp> = emptyList(),
     private val onRoute: (String?) -> Unit = {},
     private val logLine: (String) -> Unit,
 ) {
     private val pool = Executors.newCachedThreadPool()
-    private val router = TransportRouter(logLine, pool, workerDomains, onRoute)
+    private val router = TransportRouter(logLine, pool, workerDomains, onRoute, customIps)
     private var serverSocket: ServerSocket? = null
 
     /** TCP fallback state: a blocked DC must not be retried on every client. */
