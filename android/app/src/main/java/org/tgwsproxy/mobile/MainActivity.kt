@@ -510,6 +510,8 @@ private fun Screen(
         }
     }
 
+    var customIps by remember { mutableStateOf(parseCustomIps(prefs.getString("custom_ips", null))) }
+
     fun runProbe() {
         ProxyRuntime.log("— проверка соединения —")
         prefs.edit().putString("worker", workerDomain).apply()
@@ -556,7 +558,6 @@ private fun Screen(
     var notesLoading by remember { mutableStateOf(false) }
     var notesFailed by remember { mutableStateOf(false) }
     val versionCode = remember { Updater.currentVersionCode(context) }
-    var customIps by remember { mutableStateOf(parseCustomIps(prefs.getString("custom_ips", null))) }
 
     /** Возвращает текст ошибки или null, если адрес добавлен. */
     fun addCustomIp(rawIp: String, kind: IpKind): String? {
