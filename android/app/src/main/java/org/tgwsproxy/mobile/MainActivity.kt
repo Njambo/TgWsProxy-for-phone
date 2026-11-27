@@ -424,7 +424,7 @@ private fun rememberSystemScreenReader(): Boolean {
     return enabled
 }
 
-private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates, Terminal, WorkerSetup }
+private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates, Terminal, WorkerSetup, Menu, Profile }
 
 @Composable
 private fun Screen(
@@ -560,7 +560,7 @@ private fun Screen(
     var updateInfo by remember { mutableStateOf<UpdateCheck.Available?>(null) }
     var downloadProgress by remember { mutableStateOf<Int?>(null) }
     var checkingUpdates by remember { mutableStateOf(false) }
-    var menuOpen by remember { mutableStateOf(false) }
+    var profileName by remember { mutableStateOf(prefs.getString("profile_name", "") ?: "") }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var releaseNotes by remember { mutableStateOf<List<ReleaseNote>?>(null) }
     var notesLoading by remember { mutableStateOf(false) }
@@ -716,13 +716,40 @@ private fun Screen(
     }
 
     BackHandler(enabled = screen != AppScreen.Main) {
-        screen = if (
-            screen == AppScreen.Themes || screen == AppScreen.Dictor || screen == AppScreen.Updates
-        ) {
-            AppScreen.Settings
-        } else {
-            AppScreen.Main
+        screen = when (screen) {
+            AppScreen.Themes, AppScreen.Dictor, AppScreen.Updates -> AppScreen.Settings
+            AppScreen.Settings, AppScreen.Profile -> AppScreen.Menu
+            else -> AppScreen.Main
         }
+    }
+
+    if (screen == AppScreen.Menu) {
+        MenuScreen(
+            profileSummary = profileName.ifBlank { "Имя не задано" },
+            onOpenProfile = { screen = AppScreen.Profile },
+            onOpenSettings = { screen = AppScreen.Settings },
+            onBack = { screen = AppScreen.Main },
+        )
+        return
+    }
+
+    if (screen == AppScreen.Profile) {
+        ProfileScreen(
+            name = profileName,
+            onNameChange = { value ->
+                profileName = value
+                prefs.edit().putString("profile_name", value).apply()
+            },
+            facts = listOf(
+                "Версия приложения" to versionName,
+                "Адрес прокси" to "127.0.0.1:${portText.ifBlank { "1443" }}",
+                "Свой Worker" to workerDomain.ifBlank { "не задан" },
+                "Свои IP-адреса" to customIps.size.toString(),
+                "Тема" to "${palette.label}, ${themeMode.label()}",
+            ),
+            onBack = { screen = AppScreen.Menu },
+        )
+        return
     }
 
     if (screen == AppScreen.Settings) {
@@ -736,7 +763,7 @@ private fun Screen(
             dictorSummary = "${readerMode.label()} · " +
                 if (narratorSettings.source == NarratorSource.App) "голос приложения" else "через TalkBack",
             onOpenDictor = { screen = AppScreen.Dictor },
-            onBack = { screen = AppScreen.Main },
+            onBack = { screen = AppScreen.Menu },
         )
         return
     }
@@ -837,40 +864,23 @@ private fun Screen(
                     .weight(1f)
                     .semantics { heading() }
             )
-            Box {
-                IconButton(
-                    onClick = { menuOpen = true },
-                    modifier = Modifier.semantics {
-                        contentDescription = "Меню"
-                        stateDescription = if (menuOpen) "Открыто" else "Закрыто"
-                    }
+            IconButton(
+                onClick = { screen = AppScreen.Menu },
+                modifier = Modifier.semantics { contentDescription = "Меню" }
+            ) {
+                // Три вертикальные полоски.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.clearAndSetSemantics { }
                 ) {
-                    // Три вертикальные полоски.
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.clearAndSetSemantics { }
-                    ) {
-                        repeat(3) {
-                            Box(
-                                Modifier
-                                    .width(3.dp)
-                                    .height(20.dp)
-                                    .background(MaterialTheme.colorScheme.onSurface, RoundedCornerShape(2.dp))
-                            )
-                        }
+                    repeat(3) {
+                        Box(
+                            Modifier
+                                .width(3.dp)
+                                .height(20.dp)
+                                .background(MaterialTheme.colorScheme.onSurface, RoundedCornerShape(2.dp))
+                        )
                     }
-                }
-                DropdownMenu(
-                    expanded = menuOpen,
-                    onDismissRequest = { menuOpen = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Настройки") },
-                        onClick = {
-                            menuOpen = false
-                            screen = AppScreen.Settings
-                        }
-                    )
                 }
             }
         }
@@ -1501,6 +1511,156 @@ private fun WorkerSetupScreen(
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MenuScreen(
+    profileSummary: String,
+    onOpenProfile: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onBack: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Меню",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            OutlinedButton(onClick = onOpenProfile, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Профиль")
+                    Text(
+                        profileSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            }
+            OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Настройки")
+                    Text(
+                        "Темы, диктор, обновления",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileScreen(
+    name: String,
+    onNameChange: (String) -> Unit,
+    facts: List<Pair<String, String>>,
+    onBack: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Профиль",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                    fontSize = 32.sp,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.clearAndSetSemantics { }
+                )
+            }
+
+            OutlinedTextField(
+                value = name,
+                onValueChange = { onNameChange(it.take(30)) },
+                label = { Text("Имя") },
+                supportingText = { Text("Хранится только на этом телефоне.") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Text(
+                "Мои данные",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { heading() }
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                facts.forEach { (title, value) ->
+                    Column(modifier = Modifier.semantics(mergeDescendants = true) { }) {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(value, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
             }
         }
     }
