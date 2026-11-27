@@ -560,6 +560,7 @@ private fun Screen(
     var updateInfo by remember { mutableStateOf<UpdateCheck.Available?>(null) }
     var downloadProgress by remember { mutableStateOf<Int?>(null) }
     var checkingUpdates by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var releaseNotes by remember { mutableStateOf<List<ReleaseNote>?>(null) }
     var notesLoading by remember { mutableStateOf(false) }
@@ -836,11 +837,41 @@ private fun Screen(
                     .weight(1f)
                     .semantics { heading() }
             )
-            IconButton(
-                onClick = { screen = AppScreen.Settings },
-                modifier = Modifier.semantics { contentDescription = "Настройки" }
-            ) {
-                Text("⚙", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            Box {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.semantics {
+                        contentDescription = "Меню"
+                        stateDescription = if (menuOpen) "Открыто" else "Закрыто"
+                    }
+                ) {
+                    // Три вертикальные полоски.
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.clearAndSetSemantics { }
+                    ) {
+                        repeat(3) {
+                            Box(
+                                Modifier
+                                    .width(3.dp)
+                                    .height(20.dp)
+                                    .background(MaterialTheme.colorScheme.onSurface, RoundedCornerShape(2.dp))
+                            )
+                        }
+                    }
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Настройки") },
+                        onClick = {
+                            menuOpen = false
+                            screen = AppScreen.Settings
+                        }
+                    )
+                }
             }
         }
         Text(
