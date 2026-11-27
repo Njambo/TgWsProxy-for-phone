@@ -487,6 +487,31 @@ private fun Screen(
 
     fun stopProxy() = ProxyService.stop(context)
 
+    fun copySettings() {
+        val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+        // Несохранённые правки порта и секрета тоже попадают в копию.
+        val editor = prefs.edit().putString("secret", secretHex).putString("worker", workerDomain)
+        portText.toIntOrNull()?.let { editor.putInt("port", it) }
+        editor.apply()
+        clipboard.setPrimaryClip(ClipData.newPlainText("tgws-settings", SettingsBackup.export(prefs)))
+        Toast.makeText(context, "Настройки скопированы", Toast.LENGTH_SHORT).show()
+    }
+
+    fun pasteSettings() {
+        val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+        val text = clipboard.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+        try {
+            val applied = SettingsBackup.import(prefs, text)
+            Toast.makeText(context, "Настройки применены: $applied", Toast.LENGTH_SHORT).show()
+            // Экран заново читает все настройки из хранилища.
+            (context as? android.app.Activity)?.recreate()
+        } catch (e: IllegalArgumentException) {
+            Toast.makeText(context, e.message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     fun proxyLink(): String {
         val port = (status as? ProxyStatus.Running)?.port ?: (portText.toIntOrNull() ?: 1443)
         return "tg://proxy?server=127.0.0.1&port=$port&secret=$secretHex"
@@ -747,6 +772,9 @@ private fun Screen(
                 "Свои IP-адреса" to customIps.size.toString(),
                 "Тема" to "${palette.label}, ${themeMode.label()}",
             ),
+            canImport = !running,
+            onExport = { copySettings() },
+            onImport = { pasteSettings() },
             onBack = { screen = AppScreen.Menu },
         )
         return
@@ -1582,6 +1610,9 @@ private fun ProfileScreen(
     name: String,
     onNameChange: (String) -> Unit,
     facts: List<Pair<String, String>>,
+    canImport: Boolean,
+    onExport: () -> Unit,
+    onImport: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1661,6 +1692,40 @@ private fun ProfileScreen(
                         Text(value, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
+            }
+
+            Text(
+                "Резервная копия настроек",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { heading() }
+            )
+            Text(
+                "Чтобы перенести настройки на другой телефон, нажмите «Скопировать настройки», " +
+                    "отправьте текст себе (например, в «Избранное» Telegram), а на другом телефоне " +
+                    "скопируйте его и нажмите «Вставить настройки». В копии есть секрет прокси и адрес " +
+                    "вашего Worker, не отправляйте её посторонним.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+                    Text("Скопировать настройки", textAlign = TextAlign.Center)
+                }
+                OutlinedButton(
+                    onClick = onImport,
+                    enabled = canImport,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Вставить настройки", textAlign = TextAlign.Center)
+                }
+            }
+            if (!canImport) {
+                Text(
+                    "Чтобы вставить настройки, сначала остановите прокси.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
