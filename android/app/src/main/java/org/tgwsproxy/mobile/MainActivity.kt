@@ -114,6 +114,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
 import java.util.Locale
@@ -422,7 +424,7 @@ private fun rememberSystemScreenReader(): Boolean {
     return enabled
 }
 
-private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates, Terminal }
+private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates, Terminal, WorkerSetup }
 
 @Composable
 private fun Screen(
@@ -780,6 +782,18 @@ private fun Screen(
         return
     }
 
+    if (screen == AppScreen.WorkerSetup) {
+        WorkerSetupScreen(
+            onApply = { address ->
+                workerDomain = address
+                prefs.edit().putString("worker", address).apply()
+            },
+            onOpenCloudflare = { openUrl("https://dash.cloudflare.com/profile/api-tokens") },
+            onBack = { screen = AppScreen.Main },
+        )
+        return
+    }
+
     if (screen == AppScreen.Terminal) {
         TerminalScreen(
             route = route,
@@ -881,13 +895,22 @@ private fun Screen(
             modifier = Modifier.fillMaxWidth()
         )
 
-        TextButton(
-            onClick = {
-                openUrl("https://github.com/Njambo/TgWsProxy-for-phone#свой-cloudflare-worker")
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Как создать свой Worker (бесплатно)")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+                onClick = {
+                    openUrl("https://github.com/Njambo/TgWsProxy-for-phone#свой-cloudflare-worker")
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Как создать Worker", textAlign = TextAlign.Center)
+            }
+            TextButton(
+                onClick = { screen = AppScreen.WorkerSetup },
+                enabled = !running,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Создать автоматически", textAlign = TextAlign.Center)
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1290,6 +1313,163 @@ private fun TerminalScreen(
                 ) {
                     Text("↵", fontSize = 20.sp, modifier = Modifier.clearAndSetSemantics { })
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkerSetupScreen(
+    onApply: (String) -> Unit,
+    onOpenCloudflare: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var token by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("tgws-proxy") }
+    var subdomain by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<String?>(null) }
+    var failure by remember { mutableStateOf<String?>(null) }
+    val lines = remember { mutableStateListOf<String>() }
+
+    fun start() {
+        if (busy) return
+        busy = true
+        result = null
+        failure = null
+        lines.clear()
+        scope.launch {
+            try {
+                val address = WorkerSetup.run(context, token.trim(), name.trim(), subdomain.trim()) { line ->
+                    lines.add(line)
+                }
+                result = address
+                token = ""
+                onApply(address)
+            } catch (e: WorkerSetup.SetupException) {
+                failure = e.message
+            } catch (_: java.io.IOException) {
+                failure = "Нет связи с Cloudflare. Проверьте интернет и повторите."
+            } catch (e: Exception) {
+                failure = "${e.javaClass.simpleName}: ${e.message ?: "без описания"}"
+            }
+            busy = false
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Создание Worker",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "1. Войдите на dash.cloudflare.com (нужна только почта, карта не нужна).\n" +
+                    "2. Откройте My Profile → API Tokens → Create Token (кнопка ниже откроет эту страницу).\n" +
+                    "3. Выберите шаблон «Edit Cloudflare Workers», нажмите Continue to summary, " +
+                    "затем Create Token.\n" +
+                    "4. Скопируйте токен и вставьте его ниже. Приложение отправляет его только в " +
+                    "Cloudflare и нигде не сохраняет. После создания Worker токен можно удалить на той же странице.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            OutlinedButton(onClick = onOpenCloudflare, modifier = Modifier.fillMaxWidth()) {
+                Text("Открыть страницу токенов Cloudflare")
+            }
+
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it.trim() },
+                label = { Text("API-токен Cloudflare") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = name,
+                onValueChange = { value ->
+                    name = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '-' }.take(54)
+                },
+                label = { Text("Имя Worker") },
+                singleLine = true,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = subdomain,
+                onValueChange = { value ->
+                    subdomain = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '-' }.take(54)
+                },
+                label = { Text("Поддомен workers.dev (необязательно)") },
+                supportingText = {
+                    Text("Нужен только для нового аккаунта. Если адрес workers.dev уже есть, оставьте пустым.")
+                },
+                singleLine = true,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Button(
+                onClick = { start() },
+                enabled = !busy && token.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (busy) "Создаю…" else "Создать Worker")
+            }
+
+            if (lines.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    lines.forEach { line -> TermLine(line) }
+                }
+            }
+            result?.let { address ->
+                Text(
+                    "Готово. Адрес $address записан в поле «Свой Cloudflare Worker» на главном экране.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                )
+            }
+            failure?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                )
             }
         }
     }

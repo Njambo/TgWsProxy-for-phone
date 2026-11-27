@@ -67,6 +67,13 @@ android {
         jvmTarget = "17"
     }
 
+    sourceSets {
+        getByName("main") {
+            // Код Worker лежит в docs/: приложение берёт его оттуда же и загружает в Cloudflare.
+            assets.srcDir("../../docs")
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
