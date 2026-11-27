@@ -109,6 +109,11 @@ import org.tgwsproxy.mobile.core.TelegramDc
 import org.tgwsproxy.mobile.core.encodeCustomIps
 import org.tgwsproxy.mobile.core.ipError
 import org.tgwsproxy.mobile.core.parseCustomIps
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
 import java.util.Locale
@@ -1050,6 +1055,25 @@ private fun SettingsScreen(
 }
 
 @Composable
+private fun TermLine(
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    bold: Boolean = false,
+) {
+    Text(
+        text,
+        modifier = modifier,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+        fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+        color = color
+    )
+}
+
+/** Терминал: поле как у журнала; своё IP вводится прямо в нижней строке поля. */
+@Composable
 private fun TerminalScreen(
     route: String?,
     running: Boolean,
@@ -1060,7 +1084,23 @@ private fun TerminalScreen(
 ) {
     var input by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf(IpKind.Gateway) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var note by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+
+    fun submit() {
+        val text = input.trim()
+        if (text.isEmpty()) return
+        val problem = onAdd(text, kind)
+        if (problem == null) {
+            val kindName = if (kind == IpKind.Gateway) "шлюз Telegram" else "Cloudflare"
+            note = "+ добавлен $text ($kindName)" to false
+            input = ""
+        } else {
+            note = "! $problem" to true
+        }
+    }
+
+    val primary = MaterialTheme.colorScheme.primary
+    val dim = MaterialTheme.colorScheme.onSurfaceVariant
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -1083,185 +1123,172 @@ private fun TerminalScreen(
             )
         }
 
+        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            OptionSelector(
+                title = "Новый адрес добавить как",
+                options = listOf(
+                    IpKind.Gateway to "Шлюз Telegram",
+                    IpKind.Cloudflare to "Cloudflare",
+                ),
+                current = kind,
+                onChange = { kind = it },
+            )
+        }
+
+        // Поле терминала: тот же вид, что у журнала подключений.
         Column(
             modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    "Сейчас используется",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    route ?: "Нет активного подключения",
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp
-                )
-            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                TermLine("Сейчас: ${route ?: "нет активного подключения"}")
+                Spacer(Modifier.height(8.dp))
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Мои IP-адреса",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
+                TermLine(
+                    "# Мои адреса",
+                    color = primary,
+                    bold = true,
                     modifier = Modifier.semantics { heading() }
                 )
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { value ->
-                        input = value.filter { it.isDigit() || it == '.' }.take(15)
-                        error = null
-                    },
-                    label = { Text("IP-адрес") },
-                    placeholder = { Text("например 104.19.0.1") },
-                    singleLine = true,
-                    isError = error != null,
-                    supportingText = { error?.let { Text(it) } },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OptionSelector(
-                    title = "Тип адреса",
-                    options = listOf(
-                        IpKind.Gateway to "Шлюз Telegram",
-                        IpKind.Cloudflare to "Cloudflare",
-                    ),
-                    current = kind,
-                    onChange = { kind = it },
-                )
-                Text(
-                    if (kind == IpKind.Gateway) {
-                        "Шлюз Telegram: приложение подключится к этому адресу как к серверу " +
-                            "WebSocket Telegram для любого дата-центра."
-                    } else {
-                        "Cloudflare: приложение пойдёт через этот узел по маскировочным " +
-                            "доменам, как через встроенные узлы Cloudflare."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Button(
-                    onClick = {
-                        val problem = onAdd(input, kind)
-                        if (problem == null) {
-                            input = ""
-                            error = null
-                        } else {
-                            error = problem
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Добавить")
-                }
-
                 if (customIps.isEmpty()) {
-                    Text(
-                        "Своих адресов пока нет.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    TermLine("  (пока нет)")
                 }
                 customIps.forEach { item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                            .padding(start = 12.dp, top = 2.dp, bottom = 2.dp, end = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TermLine(
+                            "  ${if (item.kind == IpKind.Gateway) "gw" else "cf"}  ${item.ip}",
                             modifier = Modifier
                                 .weight(1f)
-                                .semantics(mergeDescendants = true) { }
-                        ) {
-                            Text(item.ip, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
-                            Text(
-                                if (item.kind == IpKind.Gateway) "Шлюз Telegram" else "Cloudflare",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                                .semantics {
+                                    contentDescription = "${item.ip}, " +
+                                        if (item.kind == IpKind.Gateway) "шлюз Telegram" else "Cloudflare"
+                                },
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                         TextButton(
                             onClick = { onRemove(item) },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                             modifier = Modifier.semantics { contentDescription = "Удалить ${item.ip}" }
-                        ) { Text("Удалить", modifier = Modifier.clearAndSetSemantics { }) }
+                        ) {
+                            Text("✕", fontFamily = FontFamily.Monospace, modifier = Modifier.clearAndSetSemantics { })
+                        }
                     }
                 }
-                Text(
-                    if (running) {
-                        "Прокси запущен: чтобы изменения заработали, остановите его и запустите снова."
-                    } else {
-                        "Изменения применятся при следующем запуске прокси."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+                Spacer(Modifier.height(8.dp))
 
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Встроенные адреса",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
+                TermLine(
+                    "# Встроенные адреса",
+                    color = primary,
+                    bold = true,
                     modifier = Modifier.semantics { heading() }
                 )
                 SelectionContainer {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        AddressGroup(
-                            "Дата-центры Telegram (запасной путь и Worker)",
-                            TelegramDc.tcp.entries.sortedBy { it.key }.map { "DC${it.key}" to it.value }
-                        )
-                        AddressGroup(
-                            "Шлюз WebSocket Telegram",
-                            TelegramDc.wsRedirect.entries.groupBy({ it.value }, { it.key }).map { (ip, dcs) ->
-                                "DC${dcs.sorted().joinToString(", DC")}" to ip
-                            }
-                        )
-                        AddressGroup(
-                            "Узлы Cloudflare (маскировка)",
-                            CLOUDFLARE_ANYCAST.map { "" to it }
-                        )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        TermLine("TCP, запасной путь и Worker:")
+                        TelegramDc.tcp.entries.sortedBy { it.key }.forEach { (dc, ip) ->
+                            TermLine("  ${"DC$dc".padEnd(10)}$ip", color = MaterialTheme.colorScheme.onSurface)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        TermLine("WebSocket-шлюз Telegram:")
+                        TelegramDc.wsRedirect.entries.groupBy({ it.value }, { it.key }).forEach { (ip, dcs) ->
+                            val label = "DC${dcs.sorted().joinToString(", DC")}"
+                            TermLine("  ${label.padEnd(10)}$ip", color = MaterialTheme.colorScheme.onSurface)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        TermLine("Узлы Cloudflare (маскировка):")
+                        CLOUDFLARE_ANYCAST.forEach { ip ->
+                            TermLine("  $ip", color = MaterialTheme.colorScheme.onSurface)
+                        }
                     }
                 }
-            }
-        }
-    }
-}
+                Spacer(Modifier.height(8.dp))
 
-@Composable
-private fun AddressGroup(title: String, rows: List<Pair<String, String>>) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            rows.forEach { (label, ip) ->
-                Row(modifier = Modifier.semantics(mergeDescendants = true) { }) {
-                    if (label.isNotEmpty()) {
-                        Text(
-                            label,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.width(88.dp)
-                        )
+                TermLine(
+                    if (running) {
+                        "Прокси запущен: чтобы адреса заработали, остановите его и запустите снова."
+                    } else {
+                        "Адреса применятся при следующем запуске прокси."
                     }
-                    Text(ip, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                )
+                TermLine(
+                    "gw: шлюз Telegram (WebSocket), cf: узел Cloudflare. Тип выбирается переключателем выше."
+                )
+                note?.let { (text, isError) ->
+                    Spacer(Modifier.height(4.dp))
+                    TermLine(
+                        text,
+                        color = if (isError) MaterialTheme.colorScheme.error else primary,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                    )
+                }
+            }
+
+            // Строка ввода внизу поля, как приглашение терминала.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (kind == IpKind.Gateway) "gw› " else "cf› ",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    color = primary,
+                    modifier = Modifier.clearAndSetSemantics { }
+                )
+                BasicTextField(
+                    value = input,
+                    onValueChange = { value ->
+                        input = value.filter { it.isDigit() || it == '.' }.take(15)
+                        note = null
+                    },
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    cursorBrush = SolidColor(primary),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Decimal,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { submit() }),
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "Строка ввода IP-адреса" },
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (input.isEmpty()) {
+                                Text(
+                                    "введите IP, например 104.19.0.1",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 14.sp,
+                                    color = dim.copy(alpha = 0.6f),
+                                    modifier = Modifier.clearAndSetSemantics { }
+                                )
+                            }
+                            inner()
+                        }
+                    }
+                )
+                TextButton(
+                    onClick = { submit() },
+                    modifier = Modifier.semantics { contentDescription = "Добавить адрес" }
+                ) {
+                    Text("↵", fontSize = 20.sp, modifier = Modifier.clearAndSetSemantics { })
                 }
             }
         }
