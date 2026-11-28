@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -16,10 +17,14 @@ import androidx.core.content.ContextCompat
 import org.tgwsproxy.mobile.core.ProxyServer
 import org.tgwsproxy.mobile.core.parseCustomIps
 import org.tgwsproxy.mobile.core.parseDomains
+import kotlin.concurrent.thread
 
 class ProxyService : Service() {
 
     private var server: ProxyServer? = null
+
+    @Volatile
+    private var pythonRunning = false
 
     override fun onCreate() {
         super.onCreate()
@@ -42,11 +47,21 @@ class ProxyService : Service() {
 
         server?.stop()
         server = null
+        if (pythonRunning) {
+            pythonRunning = false
+            PythonEngine.stop()
+        }
 
         ProxyRuntime.port.value = port
         ProxyRuntime.secretHex.value = secretHex
         ProxyRuntime.setRoute(null)
         ProxyRuntime.setStatus(ProxyStatus.Running(port))
+
+        val prefs = getSharedPreferences("proxy", Context.MODE_PRIVATE)
+        if (prefs.getString("engine", "native") == "python") {
+            startPython(port, secretHex, workerDomains.joinToString(","), prefs)
+            return START_NOT_STICKY
+        }
 
         val instance = ProxyServer(
             port = port,
@@ -68,9 +83,53 @@ class ProxyService : Service() {
         return START_NOT_STICKY
     }
 
+    /** Оригинальный TG WS Proxy на встроенном Python (Настройки → Движок). */
+    private fun startPython(port: Int, secretHex: String, workerDomains: String, prefs: SharedPreferences) {
+        pythonRunning = true
+        ProxyRuntime.log("Движок: оригинальный (Python)")
+        val settings = PythonEngine.Settings(
+            port = port,
+            secretHex = secretHex,
+            workerDomains = workerDomains,
+            userDomains = prefs.getString("py_domains", "") ?: "",
+            bufKb = prefs.getInt("py_buf", 256).coerceIn(4, 4096),
+            poolSize = prefs.getInt("py_pool", 4).coerceIn(0, 16),
+            cfproxy = prefs.getBoolean("py_cfproxy", true),
+            h2 = prefs.getBoolean("py_h2", true),
+            noSecure = prefs.getBoolean("py_nosecure", false),
+            verbose = prefs.getBoolean("py_verbose", false),
+        )
+        val appContext = applicationContext
+        val sink = ProxyLogSink(
+            onLine = { line -> ProxyRuntime.log(line) },
+            onStop = { error ->
+                if (error != null) ProxyRuntime.log("Python-движок остановлен: $error")
+                if (pythonRunning) {
+                    pythonRunning = false
+                    ProxyRuntime.setStatus(ProxyStatus.Stopped)
+                    stopSelf()
+                }
+            },
+        )
+        thread(name = "python-start") {
+            try {
+                PythonEngine.start(appContext, settings, sink)
+            } catch (t: Throwable) {
+                ProxyRuntime.log("Не удалось запустить Python-движок: ${t.javaClass.simpleName}: ${t.message}")
+                pythonRunning = false
+                ProxyRuntime.setStatus(ProxyStatus.Stopped)
+                stopSelf()
+            }
+        }
+    }
+
     override fun onDestroy() {
         server?.stop()
         server = null
+        if (pythonRunning) {
+            pythonRunning = false
+            PythonEngine.stop()
+        }
         ProxyRuntime.setStatus(ProxyStatus.Stopped)
         ProxyRuntime.setRoute(null)
         ProxyRuntime.log("Сервис остановлен")

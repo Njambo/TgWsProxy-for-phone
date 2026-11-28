@@ -13,3 +13,10 @@ MTProto obfuscated2 transport and the reference implementation above.
 
 "Telegram" is a trademark of Telegram Messenger Inc. This project is not
 affiliated with or endorsed by Telegram.
+
+
+Python engine (optional, switchable in Settings): the unmodified `proxy/` package of
+Flowseal/tg-ws-proxy 1.12.0 (https://github.com/Flowseal/tg-ws-proxy), MIT License, bundled
+in android/app/src/main/python/proxy together with its license text (UPSTREAM_LICENSE.txt).
+It runs on Chaquopy (MIT License, https://github.com/chaquo/chaquopy) with the httpx[http2]
+and cryptography packages, which are installed at build time.

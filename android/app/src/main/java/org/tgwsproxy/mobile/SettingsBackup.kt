@@ -15,13 +15,21 @@ object SettingsBackup {
     private val STRING_KEYS = listOf(
         "secret", "worker", "theme", "palette", "screen_reader",
         "narrator_source", "narrator_voice", "custom_ips", "profile_name",
+        "engine", "py_domains",
     )
+    private val INT_RANGES = mapOf(
+        "port" to 1024..65535,
+        "py_pool" to 0..16,
+        "py_buf" to 4..4096,
+    )
+    private val BOOL_KEYS = listOf("py_cfproxy", "py_h2", "py_nosecure", "py_verbose")
     private val FLOAT_KEYS = listOf("narrator_rate", "narrator_pitch")
 
     fun export(prefs: SharedPreferences): String {
         val data = JSONObject()
         for (key in STRING_KEYS) prefs.getString(key, null)?.let { data.put(key, it) }
-        if (prefs.contains("port")) data.put("port", prefs.getInt("port", 1443))
+        for (key in INT_RANGES.keys) if (prefs.contains(key)) data.put(key, prefs.getInt(key, 0))
+        for (key in BOOL_KEYS) if (prefs.contains(key)) data.put(key, prefs.getBoolean(key, false))
         for (key in FLOAT_KEYS) {
             if (prefs.contains(key)) data.put(key, prefs.getFloat(key, 1.0f).toDouble())
         }
@@ -57,6 +65,7 @@ object SettingsBackup {
                 "secret" -> value.takeIf { it.length in 2..128 && it.all { c -> c.isDigit() || c.lowercaseChar() in 'a'..'f' } }
                 "profile_name" -> value.take(30)
                 "custom_ips" -> value.takeIf { it.length <= 4000 }
+                "engine" -> value.takeIf { it == "native" || it == "python" }
                 else -> value.takeIf { it.length <= 500 && it.none { c -> c.isISOControl() && c != '\n' } }
             }
             if (clean != null) {
@@ -64,9 +73,18 @@ object SettingsBackup {
                 applied++
             }
         }
-        data.optInt("port", -1).takeIf { it in 1024..65535 }?.let {
-            editor.putInt("port", it)
-            applied++
+        for ((key, range) in INT_RANGES) {
+            if (!data.has(key)) continue
+            data.optInt(key, -1).takeIf { it in range }?.let {
+                editor.putInt(key, it)
+                applied++
+            }
+        }
+        for (key in BOOL_KEYS) {
+            if (data.has(key)) {
+                editor.putBoolean(key, data.optBoolean(key))
+                applied++
+            }
         }
         for (key in FLOAT_KEYS) {
             if (!data.has(key)) continue

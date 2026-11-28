@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.chaquo.python")
 }
 
 android {
@@ -22,6 +23,10 @@ android {
         versionName = if (ciBuild != null) "$versionBase.${ciBuild - codeOffset}" else "$versionBase.0"
         buildConfigField("String", "VERSION_BASE", "\"$versionBase\"")
         buildConfigField("int", "CODE_OFFSET", "$codeOffset")
+        // Python встраивается как нативный компонент, поэтому набор ABI нужно указать явно.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     val keystorePath: String? = System.getenv("KEYSTORE_FILE")
@@ -77,6 +82,17 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+}
+
+// Оригинальный TG WS Proxy (папка src/main/python/proxy) работает на встроенном Python.
+chaquopy {
+    defaultConfig {
+        version = "3.12"
+        pip {
+            install("httpx[http2]")
+            install("cryptography")
+        }
     }
 }
 

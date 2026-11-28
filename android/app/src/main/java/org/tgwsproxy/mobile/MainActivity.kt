@@ -123,6 +123,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.Switch
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
 import java.util.Locale
@@ -431,7 +435,7 @@ private fun rememberSystemScreenReader(): Boolean {
     return enabled
 }
 
-private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates, Terminal, WorkerSetup, Menu, Profile }
+private enum class AppScreen { Main, Log, Settings, Themes, Dictor, Updates, Terminal, WorkerSetup, Menu, Profile, Engine }
 
 @Composable
 private fun Screen(
@@ -798,7 +802,7 @@ private fun Screen(
 
     BackHandler(enabled = screen != AppScreen.Main) {
         screen = when (screen) {
-            AppScreen.Themes, AppScreen.Dictor, AppScreen.Updates -> AppScreen.Settings
+            AppScreen.Themes, AppScreen.Dictor, AppScreen.Updates, AppScreen.Engine -> AppScreen.Settings
             AppScreen.Settings, AppScreen.Profile -> AppScreen.Menu
             else -> AppScreen.Main
         }
@@ -855,8 +859,19 @@ private fun Screen(
             dictorSummary = "${readerMode.label()} · " +
                 if (narratorSettings.source == NarratorSource.App) "голос приложения" else "через TalkBack",
             onOpenDictor = { screen = AppScreen.Dictor },
+            engineSummary = if (prefs.getString("engine", "native") == "python") {
+                "Оригинальный (Python)"
+            } else {
+                "Наш (Kotlin)"
+            },
+            onOpenEngine = { screen = AppScreen.Engine },
             onBack = { screen = AppScreen.Menu },
         )
+        return
+    }
+
+    if (screen == AppScreen.Engine) {
+        EngineScreen(prefs = prefs, running = running, onBack = { screen = AppScreen.Settings })
         return
     }
 
@@ -1132,6 +1147,8 @@ private fun SettingsScreen(
     onOpenUpdates: () -> Unit,
     dictorSummary: String,
     onOpenDictor: () -> Unit,
+    engineSummary: String,
+    onOpenEngine: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1185,6 +1202,21 @@ private fun SettingsScreen(
                     Text("Диктор")
                     Text(
                         dictorSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text("›", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics { })
+            }
+
+            OutlinedButton(
+                onClick = onOpenEngine,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Движок прокси")
+                    Text(
+                        engineSummary,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1883,6 +1915,150 @@ private fun ProfileScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, onValueChange = onChange, role = Role.Switch)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+/** Выбор движка прокси и настройки оригинального движка (Python, как на компьютере). */
+@Composable
+private fun EngineScreen(prefs: SharedPreferences, running: Boolean, onBack: () -> Unit) {
+    var engine by remember { mutableStateOf(prefs.getString("engine", "native") ?: "native") }
+    var pool by remember { mutableStateOf(prefs.getInt("py_pool", 4).toString()) }
+    var buf by remember { mutableStateOf(prefs.getInt("py_buf", 256).toString()) }
+    var domains by remember { mutableStateOf(prefs.getString("py_domains", "") ?: "") }
+    var cfproxy by remember { mutableStateOf(prefs.getBoolean("py_cfproxy", true)) }
+    var h2 by remember { mutableStateOf(prefs.getBoolean("py_h2", true)) }
+    var noSecure by remember { mutableStateOf(prefs.getBoolean("py_nosecure", false)) }
+    var verbose by remember { mutableStateOf(prefs.getBoolean("py_verbose", false)) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onBack,
+                modifier = Modifier.semantics { contentDescription = "Назад" }
+            ) { Text("← Назад", modifier = Modifier.clearAndSetSemantics { }) }
+            Text(
+                "Движок прокси",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { heading() }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            OptionSelector(
+                title = "Движок",
+                options = listOf("native" to "Наш (Kotlin)", "python" to "Оригинальный (Python)"),
+                current = engine,
+                onChange = {
+                    engine = it
+                    prefs.edit().putString("engine", it).apply()
+                },
+            )
+            Text(
+                if (engine == "python") {
+                    "Оригинальный TG WS Proxy 1.12.0, как на компьютере: пул соединений, HTTP/2 для " +
+                        "фото и видео через Cloudflare, автообновление списка доменов. Работает на " +
+                        "встроенном Python: запускается на пару секунд дольше и занимает больше " +
+                        "места и памяти. Свои IP-адреса из «Терминала» ему не передаются."
+                } else {
+                    "Наш движок на Kotlin: небольшой размер, быстрый запуск, свои IP-адреса " +
+                        "в «Терминале»."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (running) {
+                Text(
+                    "Прокси запущен: переключение и настройки применятся после остановки и нового запуска.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Text(
+                "Настройки оригинального движка",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { heading() }
+            )
+            SwitchRow("Запасной путь через Cloudflare", cfproxy) {
+                cfproxy = it
+                prefs.edit().putBoolean("py_cfproxy", it).apply()
+            }
+            SwitchRow("HTTP/2 для фото и видео через Cloudflare", h2) {
+                h2 = it
+                prefs.edit().putBoolean("py_h2", it).apply()
+            }
+            SwitchRow("Порт 80 вместо 443 для Cloudflare", noSecure) {
+                noSecure = it
+                prefs.edit().putBoolean("py_nosecure", it).apply()
+            }
+            SwitchRow("Подробный журнал", verbose) {
+                verbose = it
+                prefs.edit().putBoolean("py_verbose", it).apply()
+            }
+            OutlinedTextField(
+                value = pool,
+                onValueChange = { value ->
+                    pool = value.filter { it.isDigit() }.take(2)
+                    pool.toIntOrNull()?.let { prefs.edit().putInt("py_pool", it.coerceIn(0, 16)).apply() }
+                },
+                label = { Text("Пул соединений на дата-центр (0–16)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = buf,
+                onValueChange = { value ->
+                    buf = value.filter { it.isDigit() }.take(4)
+                    buf.toIntOrNull()?.let { prefs.edit().putInt("py_buf", it.coerceIn(4, 4096)).apply() }
+                },
+                label = { Text("Буфер сокетов, КБ (4–4096)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = domains,
+                onValueChange = {
+                    domains = it.take(500)
+                    prefs.edit().putString("py_domains", domains).apply()
+                },
+                label = { Text("Свои домены Cloudflare (через запятую)") },
+                supportingText = {
+                    Text("Необязательно. Поле «Свой Cloudflare Worker» на главном экране тоже передаётся этому движку.")
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
