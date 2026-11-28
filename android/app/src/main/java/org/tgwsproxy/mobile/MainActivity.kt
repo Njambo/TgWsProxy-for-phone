@@ -116,6 +116,13 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.tgwsproxy.mobile.core.RouteProbe
 import org.tgwsproxy.mobile.core.parseDomains
 import java.util.Locale
@@ -586,6 +593,11 @@ private fun Screen(
     var downloadProgress by remember { mutableStateOf<Int?>(null) }
     var checkingUpdates by remember { mutableStateOf(false) }
     var profileName by remember { mutableStateOf(prefs.getString("profile_name", "") ?: "") }
+    var accountName by remember { mutableStateOf(prefs.getString("account_name", "") ?: "") }
+    var accountEmail by remember { mutableStateOf(prefs.getString("account_email", "") ?: "") }
+    var accountPhoto by remember { mutableStateOf(prefs.getString("account_photo", "") ?: "") }
+    var signingIn by remember { mutableStateOf(false) }
+    var authMessage by remember { mutableStateOf<String?>(null) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var releaseNotes by remember { mutableStateOf<List<ReleaseNote>?>(null) }
     var notesLoading by remember { mutableStateOf(false) }
@@ -631,6 +643,50 @@ private fun Screen(
         } catch (_: Exception) {
             openAccessibilitySettings()
         }
+    }
+
+    fun signInWithGoogle() {
+        val activity = context as? android.app.Activity ?: return
+        if (signingIn) return
+        signingIn = true
+        authMessage = null
+        scope.launch {
+            try {
+                val account = GoogleAuth.signIn(activity, context.getString(R.string.google_web_client_id))
+                accountName = account.name
+                accountEmail = account.email
+                accountPhoto = account.photoUrl
+                prefs.edit()
+                    .putString("account_provider", "google")
+                    .putString("account_name", account.name)
+                    .putString("account_email", account.email)
+                    .putString("account_photo", account.photoUrl)
+                    .apply()
+                if (profileName.isBlank() && account.name.isNotBlank()) {
+                    profileName = account.name.take(30)
+                    prefs.edit().putString("profile_name", profileName).apply()
+                }
+            } catch (e: GoogleAuth.AuthException) {
+                authMessage = e.message
+            } catch (e: Exception) {
+                authMessage = "${e.javaClass.simpleName}: ${e.message ?: "без описания"}"
+            }
+            signingIn = false
+        }
+    }
+
+    fun signOutAccount() {
+        scope.launch { GoogleAuth.signOut(context) }
+        accountName = ""
+        accountEmail = ""
+        accountPhoto = ""
+        authMessage = null
+        prefs.edit()
+            .remove("account_provider")
+            .remove("account_name")
+            .remove("account_email")
+            .remove("account_photo")
+            .apply()
     }
 
     fun loadNotes() {
@@ -750,7 +806,7 @@ private fun Screen(
 
     if (screen == AppScreen.Menu) {
         MenuScreen(
-            profileSummary = profileName.ifBlank { "Имя не задано" },
+            profileSummary = accountEmail.ifBlank { profileName.ifBlank { "Имя не задано" } },
             onOpenProfile = { screen = AppScreen.Profile },
             onOpenSettings = { screen = AppScreen.Settings },
             onBack = { screen = AppScreen.Main },
@@ -772,6 +828,14 @@ private fun Screen(
                 "Свои IP-адреса" to customIps.size.toString(),
                 "Тема" to "${palette.label}, ${themeMode.label()}",
             ),
+            accountName = accountName,
+            accountEmail = accountEmail,
+            accountPhoto = accountPhoto,
+            signingIn = signingIn,
+            authMessage = authMessage,
+            googleConfigured = context.getString(R.string.google_web_client_id).isNotBlank(),
+            onSignIn = { signInWithGoogle() },
+            onSignOut = { signOutAccount() },
             canImport = !running,
             onExport = { copySettings() },
             onImport = { pasteSettings() },
@@ -1610,11 +1674,34 @@ private fun ProfileScreen(
     name: String,
     onNameChange: (String) -> Unit,
     facts: List<Pair<String, String>>,
+    accountName: String,
+    accountEmail: String,
+    accountPhoto: String,
+    signingIn: Boolean,
+    authMessage: String?,
+    googleConfigured: Boolean,
+    onSignIn: () -> Unit,
+    onSignOut: () -> Unit,
     canImport: Boolean,
     onExport: () -> Unit,
     onImport: () -> Unit,
     onBack: () -> Unit,
 ) {
+    var avatar by remember(accountPhoto) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(accountPhoto) {
+        avatar = if (accountPhoto.isBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                try {
+                    java.net.URL(accountPhoto).openStream().use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -1651,11 +1738,80 @@ private fun ProfileScreen(
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
+                val photo = avatar
+                if (photo != null) {
+                    Image(
+                        bitmap = photo,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(
+                        (accountName.ifBlank { name }).trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                        fontSize = 32.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.clearAndSetSemantics { }
+                    )
+                }
+            }
+
+            if (accountEmail.isNotBlank()) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .semantics(mergeDescendants = true) { },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    if (accountName.isNotBlank()) {
+                        Text(
+                            accountName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Text(
+                        accountEmail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Вход выполнен через Google",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
+                    Text("Выйти")
+                }
+            } else {
+                Button(
+                    onClick = onSignIn,
+                    enabled = !signingIn,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (signingIn) "Вход…" else "Войти через Google")
+                }
                 Text(
-                    name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-                    fontSize = 32.sp,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.clearAndSetSemantics { }
+                    "Вход нужен для синхронизации настроек между телефонами. Приложение получает " +
+                        "только имя, почту и фото и хранит их на этом телефоне.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!googleConfigured) {
+                    Text(
+                        "Вход через Google ещё не настроен: в приложение нужно вписать Client ID (см. README).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+            authMessage?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                 )
             }
 

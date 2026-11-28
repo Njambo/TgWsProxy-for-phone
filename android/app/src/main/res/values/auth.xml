@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Client ID ВЕБ-клиента OAuth из Google Cloud Console (вид 123456789-abc.apps.googleusercontent.com).
+        Это не секрет. Пока значение пустое, кнопка «Войти через Google» сообщает, что вход не настроен.
+    -->
+    <string name="google_web_client_id" translatable="false"></string>
+</resources>
