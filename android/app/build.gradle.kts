@@ -88,7 +88,8 @@ android {
 // Оригинальный TG WS Proxy (папка src/main/python/proxy) работает на встроенном Python.
 chaquopy {
     defaultConfig {
-        version = "3.12"
+        // 3.11: у Python 3.12 нет сборки под 32-битный armeabi-v7a и меньше готовых пакетов.
+        version = "3.11"
         pip {
             install("httpx[http2]")
             install("cryptography")
